@@ -20,15 +20,15 @@ def main():
     # 1. Test SQL Server DB Connection
     print("Verificando conexión con Microsoft SQL Server (SSMS)...")
     success, info = test_db_connection()
-    if not success:
-        print(f"\n[ERROR] No se pudo conectar a SQL Server: {info}")
-        print("Asegúrese de que el servicio SQL Server (SQLEXPRESS) esté activo y la BD 'POS_LaRuta_DB' creada.")
-        sys.exit(1)
-        
-    print(f"[OK] Conectado a SQL Server ({info.splitlines()[0]})")
-    
-    # 2. Verify Seed Data
-    verify_and_seed_data()
+    if success:
+        print(f"[OK] Conectado a SQL Server ({info.splitlines()[0]})")
+        try:
+            verify_and_seed_data()
+        except Exception as e:
+            print(f"[WARNING] Error en verificación de datos iniciales: {e}")
+    else:
+        print(f"[AVISO] SQL Server no está disponible al iniciar: {info}")
+        print("La aplicación iniciará la interfaz gráfica mostrando la notificación de estado.")
 
     # 3. Argument Parser
     parser = argparse.ArgumentParser(description="Launcher del Sistema POS La Ruta del Este")
