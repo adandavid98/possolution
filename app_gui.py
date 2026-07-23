@@ -1,5 +1,6 @@
 import os
 import sys
+import socket
 import datetime
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -16,6 +17,16 @@ def get_asset_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 # CustomTkinter Theme Settings
 ctk.set_appearance_mode("Dark")
@@ -312,7 +323,17 @@ class POSApp(ctk.CTk):
             font=ctk.CTkFont(size=11, weight="bold"), 
             fg_color=caja_bg, text_color="white", corner_radius=6
         )
-        self.lbl_caja_badge.pack(side="left", padx=20)
+        self.lbl_caja_badge.pack(side="left", padx=15)
+
+        # Wi-Fi Mobile Portal Badge
+        local_ip = get_local_ip()
+        mobile_url = f"http://{local_ip}:5000"
+        lbl_mobile = ctk.CTkLabel(
+            top_bar, text=f"  📱 Consulta Móvil Wi-Fi: {mobile_url}  ", 
+            font=ctk.CTkFont(size=11, weight="bold"), 
+            fg_color="#1E3A8A", text_color="#93C5FD", corner_radius=6
+        )
+        lbl_mobile.pack(side="left", padx=10)
 
         # User Info & Logout
         btn_logout = ctk.CTkButton(
