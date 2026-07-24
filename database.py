@@ -5,19 +5,32 @@ from config import Config
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "POS_LaRuta_DB.db")
 
+_INSTALLED_DRIVER = None
+_CACHED_CONN_STR = None
+_SCHEMA_INITIALIZED = False
+
 def get_installed_driver():
-    """Finds the first available SQL Server ODBC driver on the system."""
+    """Finds the first available SQL Server ODBC driver on the system (cached)."""
+    global _INSTALLED_DRIVER
+    if _INSTALLED_DRIVER:
+        return _INSTALLED_DRIVER
     try:
         available_drivers = pyodbc.drivers()
         for driver in Config.PREFERRED_DRIVERS:
             if driver in available_drivers:
-                return driver
+                _INSTALLED_DRIVER = driver
+                return _INSTALLED_DRIVER
     except Exception:
         pass
-    return "SQL Server"
+    _INSTALLED_DRIVER = "SQL Server"
+    return _INSTALLED_DRIVER
 
-def check_sql_server():
+def check_sql_server(force_recheck=False):
     """Checks if Microsoft SQL Server POS_LaRuta_DB is available, auto-creating it if missing."""
+    global _CACHED_CONN_STR, _SCHEMA_INITIALIZED
+    if _CACHED_CONN_STR and not force_recheck:
+        return True, _CACHED_CONN_STR
+
     try:
         driver = get_installed_driver()
         if Config.DB_USER and Config.DB_PASSWORD:
@@ -56,8 +69,11 @@ def check_sql_server():
         # Try direct connection
         try:
             conn = pyodbc.connect(conn_str, timeout=3)
-            init_sqlserver_schema(conn)
+            if not _SCHEMA_INITIALIZED:
+                init_sqlserver_schema(conn)
+                _SCHEMA_INITIALIZED = True
             conn.close()
+            _CACHED_CONN_STR = conn_str
             return True, conn_str
         except Exception:
             # If direct connection failed, try connecting to master to auto-create DB
@@ -69,10 +85,14 @@ def check_sql_server():
             
             # Now test direct connection again
             conn = pyodbc.connect(conn_str, timeout=3)
-            init_sqlserver_schema(conn)
+            if not _SCHEMA_INITIALIZED:
+                init_sqlserver_schema(conn)
+                _SCHEMA_INITIALIZED = True
             conn.close()
+            _CACHED_CONN_STR = conn_str
             return True, conn_str
     except Exception:
+        _CACHED_CONN_STR = None
         return False, None
 
 def init_sqlserver_schema(conn):
@@ -182,6 +202,42 @@ def init_sqlserver_schema(conn):
             usuario_id INT FOREIGN KEY REFERENCES usuarios(id),
             fecha DATETIME DEFAULT GETDATE()
         );
+        """,
+        """
+        IF OBJECT_ID('clientes', 'U') IS NULL
+        CREATE TABLE clientes (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            codigo VARCHAR(30) UNIQUE NOT NULL,
+            nombre_razon_social VARCHAR(150) NOT NULL,
+            rnc_cedula VARCHAR(20) NULL,
+            tipo_cliente VARCHAR(30) CHECK (tipo_cliente IN ('General', 'Wholesale/Mayorista', 'Vendedor/Suplidor')) DEFAULT 'General',
+            telefono VARCHAR(30) NULL,
+            email VARCHAR(100) NULL,
+            direccion VARCHAR(255) NULL,
+            porcentaje_descuento DECIMAL(5,2) DEFAULT 0,
+            limite_credito DECIMAL(10,2) DEFAULT 0,
+            activo BIT DEFAULT 1
+        );
+        """,
+        """
+        IF OBJECT_ID('permisos_usuario', 'U') IS NULL
+        CREATE TABLE permisos_usuario (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            usuario_id INT FOREIGN KEY REFERENCES usuarios(id) ON DELETE CASCADE,
+            modulo_clave VARCHAR(50) NOT NULL,
+            permitido BIT DEFAULT 1
+        );
+        """,
+        """
+        IF OBJECT_ID('configuracion_empresa', 'U') IS NULL
+        CREATE TABLE configuracion_empresa (
+            id INT PRIMARY KEY DEFAULT 1,
+            rnc VARCHAR(20) DEFAULT '101-00000-1',
+            nombre_comercial VARCHAR(150) DEFAULT 'Minimarket La Ruta del Este',
+            telefono VARCHAR(30) DEFAULT '(809) 555-0199',
+            direccion VARCHAR(255) DEFAULT 'Av. Principal #45, La Altagracia',
+            mensaje_factura VARCHAR(255) DEFAULT '¡Gracias por su compra! Vuelva pronto.'
+        );
         """
     ]
     for stmt in statements:
@@ -190,6 +246,49 @@ def init_sqlserver_schema(conn):
     cursor.execute("IF COL_LENGTH('detalle_ventas', 'precio_costo') IS NULL ALTER TABLE detalle_ventas ADD precio_costo DECIMAL(10,2) DEFAULT 0;")
     cursor.execute("IF COL_LENGTH('detalle_ventas', 'descuento') IS NULL ALTER TABLE detalle_ventas ADD descuento DECIMAL(10,2) DEFAULT 0;")
     cursor.execute("IF COL_LENGTH('productos', 'subdepartamento_id') IS NULL ALTER TABLE productos ADD subdepartamento_id INT NULL FOREIGN KEY REFERENCES subdepartamentos(id);")
+    cursor.execute("IF COL_LENGTH('productos', 'es_descontable') IS NULL ALTER TABLE productos ADD es_descontable BIT DEFAULT 1;")
+    cursor.execute("IF COL_LENGTH('productos', 'precio_manual') IS NULL ALTER TABLE productos ADD precio_manual BIT DEFAULT 0;")
+    cursor.execute("IF COL_LENGTH('productos', 'unidad_medida') IS NULL ALTER TABLE productos ADD unidad_medida VARCHAR(20) DEFAULT 'UD';")
+    cursor.execute("IF COL_LENGTH('productos', 'estado') IS NULL ALTER TABLE productos ADD estado VARCHAR(20) DEFAULT 'Activo';")
+
+    # Migration for usuarios table: Drop old rol CHECK constraint, allow NULL password_hash, migrate legacy users
+    try:
+        cursor.execute("""
+            DECLARE @chkName NVARCHAR(256);
+            SELECT @chkName = name FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID('usuarios');
+            IF @chkName IS NOT NULL
+            BEGIN
+                EXEC('ALTER TABLE usuarios DROP CONSTRAINT ' + @chkName);
+            END
+        """)
+    except Exception:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE usuarios ALTER COLUMN password_hash VARCHAR(255) NULL;")
+    except Exception:
+        pass
+
+    try:
+        cursor.execute("UPDATE usuarios SET username = '100001', password_hash = '100001', rol = 'Programador', nombre_completo = 'Adan Ozoria (Programador/Admin)' WHERE username = 'admin';")
+        cursor.execute("UPDATE usuarios SET username = '200001', password_hash = '200001', rol = 'Cajero', nombre_completo = 'Cajero Principal (Cajero)' WHERE username = 'cajero1';")
+        cursor.execute("UPDATE usuarios SET username = '300001', password_hash = '300001', rol = 'Almacen', nombre_completo = 'Encargado de Almacen (Almacen)' WHERE username = 'almacen1';")
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM usuarios WHERE username = '100001')
+            INSERT INTO usuarios (username, password_hash, nombre_completo, rol, activo) VALUES ('100001', '100001', 'Adan Ozoria (Programador/Admin)', 'Programador', 1);
+
+            IF NOT EXISTS (SELECT * FROM usuarios WHERE username = '100002')
+            INSERT INTO usuarios (username, password_hash, nombre_completo, rol, activo) VALUES ('100002', '100002', 'Don Henderson (Propietario)', 'Propietario', 1);
+
+            IF NOT EXISTS (SELECT * FROM usuarios WHERE username = '200001')
+            INSERT INTO usuarios (username, password_hash, nombre_completo, rol, activo) VALUES ('200001', '200001', 'Cajero Principal (Cajero)', 'Cajero', 1);
+
+            IF NOT EXISTS (SELECT * FROM usuarios WHERE username = '300001')
+            INSERT INTO usuarios (username, password_hash, nombre_completo, rol, activo) VALUES ('300001', '300001', 'Encargado de Almacen (Almacen)', 'Almacen', 1);
+        """)
+    except Exception as ex_u:
+        print("Migración usuarios info:", ex_u)
+
     conn.commit()
     cursor.close()
 

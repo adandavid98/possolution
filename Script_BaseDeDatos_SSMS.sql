@@ -20,10 +20,10 @@ GO
 IF OBJECT_ID('usuarios', 'U') IS NOT NULL DROP TABLE usuarios;
 CREATE TABLE usuarios (
     id INT IDENTITY(1,1) PRIMARY KEY,
-    username VARCHAR(50) UNIQUE NOT NULL,
+    username VARCHAR(6) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     nombre_completo VARCHAR(100) NOT NULL,
-    rol VARCHAR(20) CHECK (rol IN ('Admin', 'Cajero', 'Almacen')) NOT NULL,
+    rol VARCHAR(20) CHECK (rol IN ('Programador', 'Propietario', 'Manager', 'Supervisor', 'Almacen', 'Cajero')) NOT NULL,
     activo BIT DEFAULT 1
 );
 
@@ -64,7 +64,10 @@ CREATE TABLE productos (
     precio_venta DECIMAL(10,2) NOT NULL,
     stock_actual INT DEFAULT 0,
     stock_minimo INT DEFAULT 5,
-    fecha_vencimiento DATE NULL
+    fecha_vencimiento DATE NULL,
+    es_descontable BIT DEFAULT 1,
+    precio_manual BIT DEFAULT 0,
+    unidad_medida VARCHAR(20) DEFAULT 'UD'
 );
 
 -- 6. TABLA CAJAS (Apertura y Cierre)

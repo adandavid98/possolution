@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 from config import Config
 from models import ProductModel
+from database import get_active_db_type
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -9,11 +10,13 @@ app.config.from_object(Config)
 def index():
     products = ProductModel.get_all()
     low_stock = ProductModel.get_low_stock_products()
+    db_engine = get_active_db_type()
     return render_template(
         "index.html", 
         products=products, 
         total_products=len(products), 
-        low_stock_count=len(low_stock)
+        low_stock_count=len(low_stock),
+        db_engine=db_engine
     )
 
 @app.route("/whatsapp")

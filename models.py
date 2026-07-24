@@ -1,46 +1,235 @@
 import datetime
 from database import execute_query, get_connection, get_active_db_type
 
+ALL_MODULES = [
+    ("pos", "🛒 Caja / POS Billing"),
+    ("inventory", "📦 Inventario & Alertas"),
+    ("caja", "💵 Apertura / Cierre de Caja"),
+    ("reports", "📊 Reportes & Diario Electrónico"),
+    ("backoffice", "💼 Módulo de Back Office"),
+    ("item_maintenance", "🏷️ Mantenimiento de Artículos"),
+    ("customers", "👥 Gestión de Clientes / Suplidores"),
+    ("operators", "🔒 Gestión de Operadores & Permisos"),
+    ("discount", "🏷️ Permitir Descuentos en POS"),
+    ("price_override", "✏️ Permitir Precios Manuales en POS")
+]
+
 class UserModel:
     @staticmethod
-    def authenticate(username, password):
-        sql = "SELECT id, username, nombre_completo, rol, activo FROM usuarios WHERE username = ? AND password_hash = ?"
-        user = execute_query(sql, (username, password), fetch_one=True)
-        if user and user["activo"]:
+    def authenticate(username, password=""):
+        u_str = str(username).strip()
+        p_str = str(password).strip() if password is not None else ""
+        sql = "SELECT id, username, nombre_completo, rol, activo FROM usuarios WHERE username = ? AND (password_hash = ? OR (password_hash IS NULL AND ? = ''))"
+        user = execute_query(sql, (u_str, p_str, p_str), fetch_one=True)
+        if user and user.get("activo"):
             return user
         return None
+
+    @staticmethod
+    def get_all():
+        sql = "SELECT id, username, nombre_completo, rol, activo FROM usuarios ORDER BY id ASC"
+        return execute_query(sql, fetch_all=True)
+
+    @staticmethod
+    def create(username, password, nombre_completo, rol):
+        u_str = str(username).strip()
+        p_str = str(password).strip() if password is not None else ""
+        if not u_str.isdigit() or not (1 <= len(u_str) <= 6):
+            raise ValueError("El usuario debe ser numérico de 1 a 6 dígitos (ej. 1, 12, 100001).")
+        if p_str:
+            if not p_str.isdigit() or not (1 <= len(p_str) <= 6):
+                raise ValueError("La contraseña/PIN debe ser numérica de 1 a 6 dígitos (o dejarse en blanco).")
+            
+        sql = "INSERT INTO usuarios (username, password_hash, nombre_completo, rol, activo) VALUES (?, ?, ?, ?, 1)"
+        return execute_query(sql, (u_str, p_str, nombre_completo, rol), commit=True)
+
+    @staticmethod
+    def update(user_id, password, nombre_completo, rol, activo=1):
+        if password is not None:
+            p_str = str(password).strip()
+            if p_str:
+                if not p_str.isdigit() or not (1 <= len(p_str) <= 6):
+                    raise ValueError("La contraseña/PIN debe ser numérica de 1 a 6 dígitos.")
+            sql = "UPDATE usuarios SET password_hash = ?, nombre_completo = ?, rol = ?, activo = ? WHERE id = ?"
+            return execute_query(sql, (p_str, nombre_completo, rol, activo, user_id), commit=True)
+        else:
+            sql = "UPDATE usuarios SET nombre_completo = ?, rol = ?, activo = ? WHERE id = ?"
+            return execute_query(sql, (nombre_completo, rol, activo, user_id), commit=True)
+
+    @staticmethod
+    def delete(user_id):
+        execute_query("DELETE FROM permisos_usuario WHERE usuario_id = ?", (user_id,), commit=True)
+        sql = "DELETE FROM usuarios WHERE id = ?"
+        return execute_query(sql, (user_id,), commit=True)
+
+    @staticmethod
+    def get_permissions(user_id):
+        sql = "SELECT modulo_clave, permitido FROM permisos_usuario WHERE usuario_id = ?"
+        rows = execute_query(sql, (user_id,), fetch_all=True) or []
+        perm_map = {row["modulo_clave"]: bool(row["permitido"]) for row in rows}
+        return perm_map
+
+    @staticmethod
+    def save_permissions(user_id, perm_map):
+        execute_query("DELETE FROM permisos_usuario WHERE usuario_id = ?", (user_id,), commit=True)
+        for key, value in perm_map.items():
+            sql = "INSERT INTO permisos_usuario (usuario_id, modulo_clave, permitido) VALUES (?, ?, ?)"
+            execute_query(sql, (user_id, key, 1 if value else 0), commit=True)
+
+    @staticmethod
+    def has_permission(user, module_key):
+        if not user:
+            return False
+        rol = str(user.get("rol", "")).strip()
+        if rol in ["Programador", "Admin", "Propietario", "Manager"]:
+            return True
+            
+        user_perms = UserModel.get_permissions(user["id"])
+        if module_key in user_perms:
+            return user_perms[module_key]
+
+        # Default fallbacks by role
+        if rol == "Supervisor":
+            return module_key in ["pos", "inventory", "caja", "reports", "backoffice", "item_maintenance", "customers", "discount"]
+        elif rol == "Almacen":
+            return module_key in ["inventory", "backoffice", "item_maintenance"]
+        elif rol == "Cajero":
+            return module_key in ["pos", "caja", "discount"]
+        return False
+
+class CustomerModel:
+    @staticmethod
+    def get_all(search_term=""):
+        if search_term:
+            sql = "SELECT * FROM clientes WHERE nombre_razon_social LIKE ? OR rnc_cedula LIKE ? OR codigo LIKE ? ORDER BY id DESC"
+            term = f"%{search_term}%"
+            return execute_query(sql, (term, term, term), fetch_all=True)
+        sql = "SELECT * FROM clientes ORDER BY id DESC"
+        return execute_query(sql, fetch_all=True)
+
+    @staticmethod
+    def create(codigo, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento=0.0, limite_credito=0.0):
+        sql = """
+            INSERT INTO clientes (codigo, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento, limite_credito)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        return execute_query(sql, (codigo, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento, limite_credito), commit=True)
+
+    @staticmethod
+    def update(customer_id, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento=0.0, limite_credito=0.0):
+        sql = """
+            UPDATE clientes 
+            SET nombre_razon_social = ?, rnc_cedula = ?, tipo_cliente = ?, telefono = ?, email = ?, direccion = ?, porcentaje_descuento = ?, limite_credito = ?
+            WHERE id = ?
+        """
+        return execute_query(sql, (nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento, limite_credito, customer_id), commit=True)
+
+    @staticmethod
+    def delete(customer_id):
+        sql = "DELETE FROM clientes WHERE id = ?"
+        return execute_query(sql, (customer_id,), commit=True)
+
+class CompanyModel:
+    @staticmethod
+    def get():
+        try:
+            sql = "SELECT * FROM configuracion_empresa WHERE id = 1"
+            res = execute_query(sql, fetch_one=True)
+            if res:
+                return res
+        except Exception:
+            pass
+        return {
+            "id": 1, "rnc": "101-00000-1",
+            "nombre_comercial": "Minimarket La Ruta del Este",
+            "telefono": "(809) 555-0199",
+            "direccion": "Av. Principal #45, La Altagracia",
+            "mensaje_factura": "¡Gracias por su compra! Vuelva pronto."
+        }
+
+    @staticmethod
+    def update(rnc, nombre_comercial, telefono, direccion, mensaje_factura):
+        sql = """
+            UPDATE configuracion_empresa 
+            SET rnc = ?, nombre_comercial = ?, telefono = ?, direccion = ?, mensaje_factura = ?
+            WHERE id = 1
+        """
+        return execute_query(sql, (rnc, nombre_comercial, telefono, direccion, mensaje_factura), commit=True)
+
+_DEPT_CACHE = None
+_SUBDEPT_CACHE = None
+_PROD_CACHE = None
+
+def clear_models_cache():
+    global _DEPT_CACHE, _SUBDEPT_CACHE, _PROD_CACHE
+    _DEPT_CACHE = None
+    _SUBDEPT_CACHE = None
+    _PROD_CACHE = None
 
 class DepartmentModel:
     @staticmethod
     def get_all():
+        global _DEPT_CACHE
+        if _DEPT_CACHE is not None:
+            return _DEPT_CACHE
         sql = "SELECT * FROM departamentos ORDER BY id ASC"
-        return execute_query(sql, fetch_all=True)
+        res = execute_query(sql, fetch_all=True)
+        _DEPT_CACHE = res
+        return res
+
+    @staticmethod
+    def create(nombre, descripcion=""):
+        clear_models_cache()
+        sql = "INSERT INTO departamentos (nombre, descripcion) VALUES (?, ?)"
+        return execute_query(sql, (nombre, descripcion), commit=True)
+
+    @staticmethod
+    def update(dept_id, nombre, descripcion=""):
+        clear_models_cache()
+        sql = "UPDATE departamentos SET nombre = ?, descripcion = ? WHERE id = ?"
+        return execute_query(sql, (nombre, descripcion, dept_id), commit=True)
 
 class SubDepartmentModel:
     @staticmethod
     def get_all():
+        global _SUBDEPT_CACHE
+        if _SUBDEPT_CACHE is not None:
+            return _SUBDEPT_CACHE
         sql = """
             SELECT sd.*, d.nombre AS departamento_nombre 
             FROM subdepartamentos sd
             LEFT JOIN departamentos d ON sd.departamento_id = d.id
             ORDER BY sd.id ASC
         """
-        return execute_query(sql, fetch_all=True)
+        res = execute_query(sql, fetch_all=True)
+        _SUBDEPT_CACHE = res
+        return res
 
     @staticmethod
     def get_by_department(department_id):
-        sql = """
-            SELECT sd.*, d.nombre AS departamento_nombre 
-            FROM subdepartamentos sd
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            WHERE sd.departamento_id = ?
-            ORDER BY sd.nombre ASC
-        """
-        return execute_query(sql, (department_id,), fetch_all=True)
+        subdeps = SubDepartmentModel.get_all()
+        return [sd for sd in subdeps if sd.get('departamento_id') == department_id]
+
+    @staticmethod
+    def create(departamento_id, nombre, descripcion=""):
+        clear_models_cache()
+        sql = "INSERT INTO subdepartamentos (departamento_id, nombre, descripcion) VALUES (?, ?, ?)"
+        return execute_query(sql, (departamento_id, nombre, descripcion), commit=True)
+
+    @staticmethod
+    def update(subdep_id, departamento_id, nombre, descripcion=""):
+        clear_models_cache()
+        sql = "UPDATE subdepartamentos SET departamento_id = ?, nombre = ?, descripcion = ? WHERE id = ?"
+        return execute_query(sql, (departamento_id, nombre, descripcion, subdep_id), commit=True)
 
 class ProductModel:
     @staticmethod
-    def get_all(search_term="", subdep_id=None, dep_id=None):
+    def get_all(search_term="", subdep_id=None, dep_id=None, active_only=False):
+        global _PROD_CACHE
+        if not search_term and subdep_id is None and dep_id is None and not active_only:
+            if _PROD_CACHE is not None:
+                return _PROD_CACHE
+
         params = []
         conditions = []
 
@@ -68,32 +257,70 @@ class ProductModel:
             conditions.append("sd.departamento_id = ?")
             params.append(dep_id)
 
+        if active_only:
+            conditions.append("p.estado = 'Activo'")
+
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
 
         sql += " ORDER BY p.nombre ASC"
-        return execute_query(sql, tuple(params), fetch_all=True)
+        res = execute_query(sql, tuple(params), fetch_all=True)
+        if not search_term and subdep_id is None and dep_id is None:
+            _PROD_CACHE = res
+        return res
 
     @staticmethod
-    def get_by_subdepartment(subdep_id):
-        return ProductModel.get_all(subdep_id=subdep_id)
-
-    @staticmethod
-    def get_by_department(dep_id):
-        return ProductModel.get_all(dep_id=dep_id)
-
-    @staticmethod
-    def get_by_barcode(barcode):
-        sql = """
-            SELECT p.*, 
+    def get_recent(limit=20, active_only=False):
+        """Returns the top initial essential products (limit 20)."""
+        extra = "AND (p.estado IS NULL OR p.estado = '' OR p.estado = 'Activo')" if active_only else ""
+        sql = f"""
+            SELECT TOP {limit} p.*,
                    sd.nombre AS subdepartamento_nombre,
-                   d.nombre AS departamento_nombre
-            FROM productos p 
+                   d.nombre AS departamento_nombre,
+                   c.nombre AS categoria_nombre
+            FROM productos p
             LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
             LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            WHERE p.codigo_barras = ?
+            LEFT JOIN categorias c ON p.categoria_id = c.id
+            WHERE 1=1 {extra}
+            ORDER BY p.nombre ASC
         """
-        return execute_query(sql, (barcode,), fetch_one=True)
+        return execute_query(sql, (), fetch_all=True) or []
+
+    @staticmethod
+    def search_live(term="", limit=100, active_only=False, subdep_id=None):
+        """SQL-level live search — handles search terms and subdepartment filtering."""
+        conditions = []
+        params = []
+
+        if term:
+            t = f"%{term}%"
+            conditions.append("(p.nombre LIKE ? OR p.codigo_barras LIKE ?)")
+            params.extend([t, t])
+
+        if active_only:
+            conditions.append("(p.estado IS NULL OR p.estado = '' OR p.estado = 'Activo')")
+
+        if subdep_id is not None:
+            conditions.append("p.subdepartamento_id = ?")
+            params.append(subdep_id)
+
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        eff_limit = limit if (term or subdep_id is not None) else 20
+
+        sql = f"""
+            SELECT TOP {eff_limit} p.*,
+                   sd.nombre AS subdepartamento_nombre,
+                   d.nombre AS departamento_nombre,
+                   c.nombre AS categoria_nombre
+            FROM productos p
+            LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
+            LEFT JOIN departamentos d ON sd.departamento_id = d.id
+            LEFT JOIN categorias c ON p.categoria_id = c.id
+            {where}
+            ORDER BY p.nombre ASC
+        """
+        return execute_query(sql, tuple(params), fetch_all=True) or []
 
     @staticmethod
     def get_by_id(product_id):
@@ -101,31 +328,42 @@ class ProductModel:
         return execute_query(sql, (product_id,), fetch_one=True)
 
     @staticmethod
+    def get_by_subdepartment(subdep_id):
+        all_prods = ProductModel.get_all()
+        return [p for p in all_prods if p.get('subdepartamento_id') == subdep_id]
+
+    @staticmethod
     def save_product(data):
         """Creates or updates a product."""
+        clear_models_cache()
         subdep_id = data.get("subdepartamento_id", None)
+        es_desc = 1 if data.get("es_descontable", True) else 0
+        precio_man = 1 if data.get("precio_manual", False) else 0
+        unidad = data.get("unidad_medida", "UD")
+        estado = data.get("estado", "Activo")
+
         if "id" in data and data["id"]:
             sql = """
                 UPDATE productos 
-                SET codigo_barras = ?, nombre = ?, subdepartamento_id = ?, precio_costo = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?
+                SET codigo_barras = ?, nombre = ?, subdepartamento_id = ?, precio_costo = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?, es_descontable = ?, precio_manual = ?, unidad_medida = ?, estado = ?
                 WHERE id = ?
             """
             params = (
                 data["codigo_barras"], data["nombre"], subdep_id,
                 data["precio_costo"], data["precio_venta"], data["stock_actual"],
-                data["stock_minimo"], data["id"]
+                data["stock_minimo"], es_desc, precio_man, unidad, estado, data["id"]
             )
             execute_query(sql, params, commit=True)
             return data["id"]
         else:
             sql = """
-                INSERT INTO productos (codigo_barras, nombre, subdepartamento_id, precio_costo, precio_venta, stock_actual, stock_minimo)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO productos (codigo_barras, nombre, subdepartamento_id, precio_costo, precio_venta, stock_actual, stock_minimo, es_descontable, precio_manual, unidad_medida, estado)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             params = (
                 data["codigo_barras"], data["nombre"], subdep_id,
                 data["precio_costo"], data["precio_venta"], data["stock_actual"],
-                data["stock_minimo"]
+                data["stock_minimo"], es_desc, precio_man, unidad, estado
             )
             new_id = execute_query(sql, params, commit=True)
             if isinstance(new_id, int) and new_id > 0:
@@ -135,6 +373,7 @@ class ProductModel:
 
     @staticmethod
     def delete_product(product_id):
+        clear_models_cache()
         sql = "DELETE FROM productos WHERE id = ?"
         execute_query(sql, (product_id,), commit=True)
 
@@ -231,18 +470,22 @@ class VentaModel:
             
             codigo_factura = f"FAC-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-            # 1. Insert into ventas
-            sql_venta = """
-                INSERT INTO ventas (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis_impuesto, total)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-            """
-            cursor.execute(sql_venta, (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total))
-            
             if db_type == "sqlite":
+                sql_venta = """
+                    INSERT INTO ventas (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis_impuesto, total)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """
+                cursor.execute(sql_venta, (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total))
                 venta_id = cursor.lastrowid
             else:
-                cursor.execute("SELECT SCOPE_IDENTITY() AS new_id")
-                venta_id = cursor.fetchone()[0]
+                sql_venta = """
+                    INSERT INTO ventas (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis_impuesto, total)
+                    OUTPUT INSERTED.id
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """
+                cursor.execute(sql_venta, (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total))
+                row_id = cursor.fetchone()
+                venta_id = row_id[0] if row_id else None
 
             # 2. Insert details & update stock
             for item in items:
@@ -362,30 +605,37 @@ class InventoryMovementModel:
 class ReportModel:
     @staticmethod
     def get_date_range_bounds(period_type, start_date=None, end_date=None):
-
         today = datetime.date.today()
-        if period_type == "Hoy":
-            s_dt = f"{today} 00:00:00"
-            e_dt = f"{today} 23:59:59"
-        elif period_type == "Esta Semana":
-            start_week = today - datetime.timedelta(days=today.weekday())
-            s_dt = f"{start_week} 00:00:00"
-            e_dt = f"{today} 23:59:59"
-        elif period_type == "Este Mes":
-            start_month = today.replace(day=1)
-            s_dt = f"{start_month} 00:00:00"
-            e_dt = f"{today} 23:59:59"
-        elif period_type == "Este Año":
-            start_year = today.replace(month=1, day=1)
-            s_dt = f"{start_year} 00:00:00"
-            e_dt = f"{today} 23:59:59"
-        elif period_type == "Personalizado" and start_date and end_date:
-            s_dt = f"{start_date} 00:00:00"
-            e_dt = f"{end_date} 23:59:59"
+        p = str(period_type or '').strip()
+
+        def to_iso_date(d_str):
+            if not d_str: return today
+            d_str = str(d_str).strip()
+            for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+                try:
+                    return datetime.datetime.strptime(d_str, fmt).date()
+                except ValueError:
+                    pass
+            return today
+
+        if p in ["Día", "Hoy"]:
+            s = e = today
+        elif p in ["Semana", "Esta Semana"]:
+            s = today - datetime.timedelta(days=today.weekday())
+            e = today
+        elif p in ["Mes", "Este Mes"]:
+            s = today.replace(day=1)
+            e = today
+        elif p in ["Año", "Este Año"]:
+            s = today.replace(month=1, day=1)
+            e = today
+        elif p == "Personalizado" and start_date and end_date:
+            s = to_iso_date(start_date)
+            e = to_iso_date(end_date)
         else:
-            s_dt = f"{today} 00:00:00"
-            e_dt = f"{today} 23:59:59"
-        return s_dt, e_dt
+            s = e = today
+
+        return f"{s} 00:00:00", f"{e} 23:59:59" 
 
     @staticmethod
     def get_executive_summary(start_dt, end_dt):
