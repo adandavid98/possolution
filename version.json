@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "fecha": "2026-07-28",
+  "changelog": [
+    "✨ Versión 1.0.0 Inicial Instalada.",
+    "💳 Módulo POS táctil de cobro rápido con billero dominicano (RD$).",
+    "📊 Reportes analíticos consolidados con impresión PDF y exportación Excel.",
+    "📅 Menú desplegable nativo de calendario flotante in-app.",
+    "🔍 Carga inteligente de productos y filtro instantáneo por departamento."
+  ],
+  "download_url": "https://github.com/adanozoria/Anti-POS_Project/releases/download/v1.0.0/Instalador_POS_LaRuta_Este_v1.0.zip",
+  "obligatoria": false
+}

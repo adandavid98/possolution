@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestión de Almacén - La Ruta del Este</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0B0B0E;
+            color: #FFFFFF;
+            font-family: 'Inter', sans-serif;
+        }
+        .header-box {
+            background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+            padding: 20px 15px;
+            border-bottom: 2px solid #2563EB;
+        }
+        .search-card {
+            background-color: #16161F;
+            border-radius: 12px;
+            padding: 12px;
+            margin-top: -15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+        .product-card {
+            background-color: #1E1E2A;
+            border-radius: 14px;
+            padding: 16px;
+            margin-bottom: 12px;
+            border: 1px solid #2A2A38;
+        }
+        .stock-badge {
+            font-size: 0.9rem;
+            font-weight: 700;
+            padding: 6px 12px;
+            border-radius: 8px;
+        }
+        .btn-action {
+            font-weight: 600;
+            font-size: 0.85rem;
+            border-radius: 8px;
+            padding: 8px 12px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header-box text-white">
+        <div class="container d-flex justify-content-between align-items-center">
+            <div>
+                <h5 class="fw-bold m-0">📦 GESTIÓN DE ALMACÉN</h5>
+                <small class="text-secondary">Usuario: {{ session.get('username') }} ({{ session.get('role') }})</small>
+            </div>
+            <div>
+                <a href="/logout" class="btn btn-outline-danger btn-sm rounded-pill px-3">Cerrar Sesión</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="container pb-5">
+        <div class="search-card mb-4">
+            <input type="text" id="txt-search-inv" class="form-control form-control-lg bg-dark text-white border-0 shadow-none" placeholder="🔍 Buscar producto en almacén..." autofocus>
+        </div>
+
+        <div id="toast-msg" class="alert alert-success d-none py-2 text-center small mb-3"></div>
+
+        <div id="inventory-list">
+            <div class="text-center text-muted py-4">
+                <div class="spinner-border text-primary" role="status"></div>
+                <p class="mt-2 small">Cargando existencias de inventario...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Form Movimientos -->
+    <div class="modal fade" id="modalMovimiento" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-white border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title fw-bold" id="modal-prod-title">Registrar Movimiento</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="modal-prod-id">
+                    
+                    <div class="mb-3">
+                        <label class="form-label small text-secondary fw-semibold">TIPO DE OPERACIÓN</label>
+                        <select id="modal-tipo" class="form-select bg-black text-white border-secondary">
+                            <option value="Entrada">📥 Entrada por Compra (+ Stock)</option>
+                            <option value="Salida">📤 Salida / Merma (- Stock)</option>
+                            <option value="Ajuste">✏️ Ajuste Directo (Sobrescribir Stock)</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-secondary fw-semibold">CANTIDAD DE UNIDADES</label>
+                        <input type="number" id="modal-cantidad" class="form-control form-control-lg bg-black text-white border-secondary" placeholder="Ej: 12" min="1">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-secondary fw-semibold">MOTIVO / NOTA DE ORDEN</label>
+                        <input type="text" id="modal-motivo" class="form-control bg-black text-white border-secondary" placeholder="Ej: Llegada de proveedor / Factura #102">
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-success fw-bold px-4" id="btn-save-movement">💾 Guardar Movimiento</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const inputSearch = document.getElementById('txt-search-inv');
+        const invList = document.getElementById('inventory-list');
+        const toast = document.getElementById('toast-msg');
+        let currentProducts = [];
+        let bsModal = new bootstrap.Modal(document.getElementById('modalMovimiento'));
+
+        function loadInventory(query = '') {
+            fetch(`/api/search?q=${encodeURIComponent(query)}`)
+                .then(res => res.json())
+                .then(data => {
+                    currentProducts = data;
+                    renderProducts(data);
+                })
+                .catch(err => {
+                    invList.innerHTML = `<div class="alert alert-danger text-center">Error al conectar con la base de datos.</div>`;
+                });
+        }
+
+        function renderProducts(products) {
+            if(!products || products.length === 0) {
+                invList.innerHTML = `<div class="alert alert-dark text-center">No se encontraron productos.</div>`;
+                return;
+            }
+
+            let html = '';
+            products.forEach(p => {
+                let badgeBg = p.stock_actual <= 0 ? 'bg-danger' : (p.stock_actual <= p.stock_minimo ? 'bg-warning text-dark' : 'bg-success');
+                
+                html += `
+                    <div class="product-card">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div>
+                                <h6 class="fw-bold m-0 text-white">${p.nombre}</h6>
+                                <small class="text-secondary">Cód: ${p.codigo_barras} | ${p.unidad_medida || 'Unidad'}</small>
+                            </div>
+                            <span class="stock-badge ${badgeBg}">${p.stock_actual} en stock</span>
+                        </div>
+                        <div class="d-flex gap-2 mt-3">
+                            <button class="btn btn-outline-success btn-action flex-fill" onclick="openMovementModal(${p.id}, '${p.nombre.replace(/'/g, "\\'")}', 'Entrada')">📥 Entrada</button>
+                            <button class="btn btn-outline-warning btn-action flex-fill" onclick="openMovementModal(${p.id}, '${p.nombre.replace(/'/g, "\\'")}', 'Salida')">📤 Salida</button>
+                            <button class="btn btn-outline-info btn-action flex-fill" onclick="openMovementModal(${p.id}, '${p.nombre.replace(/'/g, "\\'")}', 'Ajuste')">✏️ Ajustar</button>
+                        </div>
+                    </div>
+                `;
+            });
+            invList.innerHTML = html;
+        }
+
+        inputSearch.addEventListener('input', function() {
+            loadInventory(this.value.trim());
+        });
+
+        function openMovementModal(id, nombre, tipo) {
+            document.getElementById('modal-prod-id').value = id;
+            document.getElementById('modal-prod-title').innerText = `${tipo}: ${nombre}`;
+            document.getElementById('modal-tipo').value = tipo;
+            document.getElementById('modal-cantidad').value = '';
+            document.getElementById('modal-motivo').value = '';
+            bsModal.show();
+        }
+
+        document.getElementById('btn-save-movement').addEventListener('click', function() {
+            const prodId = document.getElementById('modal-prod-id').value;
+            const tipo = document.getElementById('modal-tipo').value;
+            const cantidad = parseInt(document.getElementById('modal-cantidad').value);
+            const motivo = document.getElementById('modal-motivo').value.trim();
+
+            if(isNaN(cantidad) || cantidad <= 0) {
+                alert('Ingrese una cantidad válida mayor a 0.');
+                return;
+            }
+
+            fetch('/api/almacen/movimiento', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    producto_id: prodId,
+                    tipo_movimiento: tipo,
+                    cantidad: cantidad,
+                    motivo: motivo
+                })
+            })
+            .then(res => res.json())
+            .then(res => {
+                if(res.success) {
+                    bsModal.hide();
+                    showToast(`✅ Movimiento (${tipo} x${cantidad}) registrado con éxito.`);
+                    loadInventory(inputSearch.value.trim());
+                } else {
+                    alert('Error: ' + res.error);
+                }
+            })
+            .catch(err => alert('Error al guardar movimiento.'));
+        });
+
+        function showToast(msg) {
+            toast.innerText = msg;
+            toast.classList.remove('d-none');
+            setTimeout(() => toast.classList.add('d-none'), 3500);
+        }
+
+        // Initial Load
+        loadInventory();
+    </script>
+</body>
+</html>

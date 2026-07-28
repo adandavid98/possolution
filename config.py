@@ -1,6 +1,12 @@
 import os
 
 class Config:
+    # App Version & Auto-Update URLs
+    APP_VERSION = "1.0.0"
+    UPDATE_CHECK_URL_GITHUB = "https://raw.githubusercontent.com/adanozoria/Anti-POS_Project/main/version.json"
+    UPDATE_CHECK_URL_LOCAL = "http://10.0.0.101:5000/api/version"
+
+    # SQL Server Connection Parameters
     # SQL Server Connection Parameters
     DB_SERVER = os.environ.get("POS_DB_SERVER", r".\SQLEXPRESS")
     DB_NAME = os.environ.get("POS_DB_NAME", "POS_LaRuta_DB")
