@@ -24,6 +24,6 @@ class Config:
     ]
 
     # App Settings
-    APP_NAME = "Minimarket La Ruta del Este - POS & Inventarios"
+    APP_NAME = "POS-SOLUTION"
     FLASK_PORT = int(os.environ.get("FLASK_PORT", 5000))
     SECRET_KEY = "la_ruta_del_este_secret_key_2026"

@@ -29,6 +29,7 @@ def build_executable():
         "--clean",
         "--onedir",
         "--windowed",
+        "--icon=assets/app_icon.ico",
         "--name=POS_LaRuta_Este",
         "--add-data=templates;templates",
         "--add-data=assets;assets",

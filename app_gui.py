@@ -1,3 +1,4 @@
+from config import Config
 import os
 import sys
 import socket
@@ -247,6 +248,29 @@ class CTkCalendarPopup(ctk.CTkFrame):
             self.on_select_callback(target_date)
         self.destroy()
 
+def get_dynamic_logo_path():
+    """Dynamically looks for logo.png, logo.jpg, logo.jpeg, logo.webp in external assets directory first, then fallback."""
+    possible_names = ["logo.png", "logo.jpg", "logo.jpeg", "logo.webp", "logo.bmp"]
+    
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    ext_assets = os.path.join(exe_dir, "assets")
+    cwd_assets = os.path.join(os.getcwd(), "assets")
+    
+    for folder in [ext_assets, cwd_assets]:
+        if os.path.exists(folder):
+            for fname in possible_names:
+                full_p = os.path.join(folder, fname)
+                if os.path.exists(full_p):
+                    return full_p
+
+    if hasattr(sys, '_MEIPASS'):
+        for fname in possible_names:
+            full_p = os.path.join(sys._MEIPASS, "assets", fname)
+            if os.path.exists(full_p):
+                return full_p
+
+    return get_asset_path(os.path.join("assets", "logo.jpg"))
+
 def get_asset_path(relative_path):
     """Gets absolute path to resource, works for dev and for PyInstaller."""
     if hasattr(sys, '_MEIPASS'):
@@ -271,7 +295,14 @@ class POSApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("Minimarket La Ruta del Este - POS & Inventarios (SQL Server)")
+        app_v = getattr(Config, 'APP_VERSION', '1.0.0')
+        self.title(f"POS-SOLUTION v{app_v}")
+        ico_path = get_asset_path("app_icon.ico")
+        if os.path.exists(ico_path):
+            try:
+                self.iconbitmap(ico_path)
+            except Exception:
+                pass
         self.geometry("1280x768")
         self.minsize(1024, 700)
         
@@ -286,6 +317,11 @@ class POSApp(ctk.CTk):
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
         
+        # Window State & Resize Throttling
+        self._is_minimized = False
+        self.bind("<Unmap>", lambda e: setattr(self, '_is_minimized', True) if e.widget == self else None)
+        self.bind("<Map>", lambda e: setattr(self, '_is_minimized', False) if e.widget == self else None)
+
         # Global Function Key Shortcuts [F1-F12]
         self.bind_all("<F1>", lambda e: self.focus_pos_search())
         self.bind_all("<F2>", lambda e: self.open_qty_keypad())
@@ -304,6 +340,8 @@ class POSApp(ctk.CTk):
     # ==========================================
     def show_login(self):
         self.current_user = None
+        self._tab_views = {}
+        self._prebuilding_status = {}
         for widget in self.container.winfo_children():
             widget.destroy()
 
@@ -347,6 +385,10 @@ class POSApp(ctk.CTk):
         main_login_box = ctk.CTkFrame(self.container, fg_color="#0F172A", corner_radius=0)
         main_login_box.pack(fill="both", expand=True)
 
+        # Fetch company info dynamically for branding
+        comp_info = CompanyModel.get()
+        com_name = comp_info.get("nombre_comercial", "Minimarket La Ruta del Este")
+
         # 1. Left Panel (Branding / Minimalist Hero - 50% Width)
         left_hero = ctk.CTkFrame(main_login_box, fg_color="#1E293B", corner_radius=0)
         left_hero.place(relx=0.0, rely=0.0, relwidth=0.5, relheight=1.0)
@@ -358,39 +400,39 @@ class POSApp(ctk.CTk):
         # Top Badge Label
         lbl_top_badge = ctk.CTkLabel(
             hero_content, 
-            text="MINIMARKET LA RUTA DEL ESTE, S.R.L.", 
-            font=ctk.CTkFont(family="Poppins", size=13, weight="bold"),
+            text=f"{com_name.upper()}, S.R.L.", 
+            font=ctk.CTkFont(family="Poppins", size=17, weight="bold"),
             text_color="#38BDF8"
         )
-        lbl_top_badge.pack(pady=(0, 20))
+        lbl_top_badge.pack(pady=(0, 25))
 
         # Minimalist Logo Emblem
-        logo_path = get_asset_path(os.path.join("assets", "logo.jpg"))
+        logo_path = get_dynamic_logo_path()
         if os.path.exists(logo_path):
             try:
                 pil_img = Image.open(logo_path)
-                self.logo_ctk = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(200, 200))
+                self.logo_ctk = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(320, 320))
                 
                 lbl_img = ctk.CTkLabel(hero_content, image=self.logo_ctk, text="")
                 lbl_img.image = self.logo_ctk
-                lbl_img.pack(pady=(0, 20))
+                lbl_img.pack(pady=(0, 25))
             except Exception as e:
                 print("Error loading logo image:", e)
 
         # Main Title & Subtitle
         lbl_main_title = ctk.CTkLabel(
             hero_content, 
-            text="Minimarket La Ruta del Este", 
-            font=ctk.CTkFont(family="Poppins", size=22, weight="bold"),
+            text=com_name, 
+            font=ctk.CTkFont(family="Poppins", size=30, weight="bold"),
             text_color="#F8FAFC",
             justify="center"
         )
-        lbl_main_title.pack(pady=(0, 6))
+        lbl_main_title.pack(pady=(0, 10))
 
         lbl_sub_hero = ctk.CTkLabel(
             hero_content, 
             text="Sistema Integral de Punto de Venta & Control de Inventario", 
-            font=ctk.CTkFont(family="Inter", size=12),
+            font=ctk.CTkFont(family="Inter", size=15),
             text_color="#94A3B8",
             justify="center"
         )
@@ -505,13 +547,16 @@ class POSApp(ctk.CTk):
         top_bar = ctk.CTkFrame(self.container, height=52, fg_color="#1E293B", corner_radius=0)
         top_bar.pack(side="top", fill="x")
 
-        lbl_brand = ctk.CTkLabel(
+        comp_info = CompanyModel.get()
+        com_name_dash = comp_info.get("nombre_comercial", "LA RUTA DEL ESTE").upper()
+
+        self.lbl_brand = ctk.CTkLabel(
             top_bar, 
-            text="  LA RUTA DEL ESTE  |  PUNTO DE VENTA", 
+            text=f"  {com_name_dash}  |  PUNTO DE VENTA", 
             font=ctk.CTkFont(family="Poppins", size=15, weight="bold"),
             text_color="#F8FAFC"
         )
-        lbl_brand.pack(side="left", padx=15)
+        self.lbl_brand.pack(side="left", padx=15)
 
         # Active Caja status badge
         caja_txt = "Caja: CERRADA"
@@ -623,28 +668,38 @@ class POSApp(ctk.CTk):
         # Always start on Welcome Dashboard upon login
         self.load_welcome_tab()
 
+
+
+
     def show_tab(self, tab_key):
         self._highlight_nav_btn(tab_key)
 
         if not hasattr(self, '_tab_views') or self._tab_views is None:
             self._tab_views = {}
+        if not hasattr(self, '_prebuilding_status') or self._prebuilding_status is None:
+            self._prebuilding_status = {}
 
         self._active_tab_key = tab_key
 
-        # If tab view already built once in session, bring to front INSTANTLY (0 ms)
-        if tab_key in self._tab_views and self._tab_views[tab_key].winfo_exists():
+        # If tab is ALREADY fully pre-built in background, bring to front INSTANTLY (0 ms)
+        if self._prebuilding_status.get(tab_key) == "done" and tab_key in self._tab_views and self._tab_views[tab_key].winfo_exists():
             self._tab_views[tab_key].tkraise()
             self.after(60, lambda tk=tab_key: self._focus_tab_search_field(tk))
             return
 
-        # Otherwise: First time opening this module! Create container & show Indeterminate Loading Bar
-        view_frame = ctk.CTkFrame(self.content_area, fg_color="#0F172A", corner_radius=0)
-        view_frame.grid(row=0, column=0, sticky="nsew")
-        self._tab_views[tab_key] = view_frame
+        # Otherwise: Module is either being created or opened for first time! Show Progress Bar Loading Overlay
+        if tab_key in self._tab_views and self._tab_views[tab_key].winfo_exists():
+            view_frame = self._tab_views[tab_key]
+        else:
+            view_frame = ctk.CTkFrame(self.content_area, fg_color="#0F172A", corner_radius=0)
+            view_frame.grid(row=0, column=0, sticky="nsew")
+            self._tab_views[tab_key] = view_frame
+
         view_frame.tkraise()
 
         if tab_key == "welcome":
             self._build_welcome_tab_ui(view_frame)
+            self._prebuilding_status["welcome"] = "done"
             self.after(60, lambda: self._focus_tab_search_field("welcome"))
         else:
             self._build_tab_with_loading_bar(tab_key, view_frame)
@@ -731,6 +786,7 @@ class POSApp(ctk.CTk):
                         overlay.destroy()
                     except Exception:
                         pass
+                    self._prebuilding_status[tab_key] = "done"
                     self.after(60, lambda: self._focus_tab_search_field(tab_key))
 
                 self.after(remaining_ms, _finish)
@@ -763,33 +819,10 @@ class POSApp(ctk.CTk):
 
     def _build_welcome_tab_ui(self, parent):
 
-        import tkinter as tk
+        scroll_frame = ctk.CTkScrollableFrame(parent, fg_color="#0F172A", corner_radius=0)
+        scroll_frame.pack(fill="both", expand=True)
 
-        container = ctk.CTkFrame(parent, fg_color="#0F172A")
-        container.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(container, bg="#0F172A", highlightthickness=0, bd=0)
-        scrollbar = ctk.CTkScrollbar(container, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        wrapper = ctk.CTkFrame(canvas, fg_color="#0F172A")
-        wrapper_id = canvas.create_window((0, 0), window=wrapper, anchor="nw")
-
-        def _on_canvas_resize(event):
-            canvas.itemconfig(wrapper_id, width=event.width)
-        canvas.bind("<Configure>", _on_canvas_resize)
-
-        def _on_wrapper_resize(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        wrapper.bind("<Configure>", _on_wrapper_resize)
-
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
-        inner = ctk.CTkFrame(wrapper, fg_color="transparent")
+        inner = ctk.CTkFrame(scroll_frame, fg_color="transparent")
         inner.pack(fill="both", expand=True, padx=24, pady=20)
 
         # Hero banner
@@ -3531,37 +3564,40 @@ class FlipChartModal(ctk.CTkToplevel):
                                           command=_on_bo_tab_change)
         self._bo_tabview.pack(fill="both", expand=True)
 
-        self._tab_item_maint = self._bo_tabview.add("🏷️ Mantenimiento Artículos")
-        self._tab_customers  = self._bo_tabview.add("👥 Clientes & Proveedores")
-        self._tab_operators  = self._bo_tabview.add("🔒 Operadores & Permisos (RBAC)")
-        self._tab_store_cfg  = self._bo_tabview.add("🏬 Datos de la Tienda")
-        self._tab_backup_cfg = self._bo_tabview.add("💾 Respaldo y Restauración SQL")
+        if UserModel.has_permission(self.current_user, "productos"):
+            self._tab_item_maint = self._bo_tabview.add("🏷️ Mantenimiento Artículos")
+            try:
+                self._load_bo_item_maintenance(self._tab_item_maint)
+            except Exception as e:
+                print("Error loading item maintenance subtab:", e)
 
-        # Load Sub-tabs with fault isolation
-        try:
-            self._load_bo_item_maintenance(self._tab_item_maint)
-        except Exception as e:
-            print("Error loading item maintenance subtab:", e)
+        if UserModel.has_permission(self.current_user, "clientes"):
+            self._tab_customers = self._bo_tabview.add("👥 Clientes & Proveedores")
+            try:
+                self._load_bo_customers(self._tab_customers)
+            except Exception as e:
+                print("Error loading customers subtab:", e)
 
-        try:
-            self._load_bo_customers(self._tab_customers)
-        except Exception as e:
-            print("Error loading customers subtab:", e)
+        if UserModel.has_permission(self.current_user, "usuarios"):
+            self._tab_operators = self._bo_tabview.add("🔒 Operadores & Permisos (RBAC)")
+            try:
+                self._load_bo_operators(self._tab_operators)
+            except Exception as e:
+                print("Error loading operators subtab:", e)
 
-        try:
-            self._load_bo_operators(self._tab_operators)
-        except Exception as e:
-            print("Error loading operators subtab:", e)
+        if UserModel.has_permission(self.current_user, "tienda"):
+            self._tab_store_cfg = self._bo_tabview.add("🏬 Datos de la Tienda")
+            try:
+                self._load_bo_store_config(self._tab_store_cfg)
+            except Exception as e:
+                print("Error loading store config subtab:", e)
 
-        try:
-            self._load_bo_store_config(self._tab_store_cfg)
-        except Exception as e:
-            print("Error loading store config subtab:", e)
-
-        try:
-            self._load_bo_backup_restore(self._tab_backup_cfg)
-        except Exception as e:
-            print("Error loading backup restore subtab:", e)
+        if UserModel.has_permission(self.current_user, "backup"):
+            self._tab_backup_cfg = self._bo_tabview.add("💾 Respaldo y Restauración SQL")
+            try:
+                self._load_bo_backup_restore(self._tab_backup_cfg)
+            except Exception as e:
+                print("Error loading backup restore subtab:", e)
 
     # ── 1. ITEM MAINTENANCE SUB-TAB ──────────────────────────────────────────
     def _load_bo_item_maintenance(self, parent):
@@ -3754,13 +3790,35 @@ class FlipChartModal(ctk.CTkToplevel):
             messagebox.showerror("Error", "Ingrese valores numéricos válidos para costos, precios y stocks.")
             return
 
-        subdept_name = self._cmb_bo_subdept.get()
-        subdepts = SubDepartmentModel.get_all()
-        subdept_id = None
-        for sd in subdepts:
-            if sd["nombre"] == subdept_name:
-                subdept_id = sd["id"]
+        dept_name = self._cmb_bo_dept.get() if hasattr(self, '_cmb_bo_dept') else ""
+        subdept_name = self._cmb_bo_subdept.get() if hasattr(self, '_cmb_bo_subdept') else ""
+
+        depts = DepartmentModel.get_all()
+        dept_id = None
+        for d in depts:
+            if d["nombre"] == dept_name:
+                dept_id = d["id"]
                 break
+
+        subdept_id = None
+        if dept_id:
+            subdepts = SubDepartmentModel.get_by_department(dept_id)
+            for sd in subdepts:
+                if sd["nombre"] == subdept_name:
+                    subdept_id = sd["id"]
+                    break
+
+        if not subdept_id:
+            all_sds = SubDepartmentModel.get_all()
+            for sd in all_sds:
+                if sd["nombre"] == subdept_name:
+                    subdept_id = sd["id"]
+                    break
+
+        if not subdept_id and self._bo_editing_prod_id:
+            curr_prod = ProductModel.get_by_id(self._bo_editing_prod_id)
+            if curr_prod:
+                subdept_id = curr_prod.get("subdepartamento_id")
 
         data = {
             "id": self._bo_editing_prod_id,
@@ -3925,6 +3983,7 @@ class FlipChartModal(ctk.CTkToplevel):
         self._ent_bo_stock.delete(0, "end")
         self._ent_bo_stock.insert(0, str(p["stock_actual"]))
         self._ent_bo_min_stock.delete(0, "end")
+        self._ent_bo_min_stock.insert(0, str(p.get("stock_minimo", 5)))
         u_code = p.get("unidad_medida") or "UD"
         for u_val in ["UD - Unidad", "LB - Libra", "KG - Kilogramo", "PQT - Paquete", "CJ - Caja", "GL - Galón", "LT - Litro", "SAC - Saco"]:
             if u_val.startswith(u_code):
@@ -4267,9 +4326,9 @@ class FlipChartModal(ctk.CTkToplevel):
 
         try:
             if self._bo_editing_user_id:
-                UserModel.update(self._bo_editing_user_id, p, nom, rol, activo)
+                UserModel.update(user_id=self._bo_editing_user_id, nombre_completo=nom, rol=rol, password=p if p else None, activo=activo)
             else:
-                UserModel.create(u, p, nom, rol)
+                UserModel.create(username=u, password=p, nombre_completo=nom, rol=rol)
             messagebox.showinfo("Éxito", f"¡Operador '{nom}' guardado exitosamente!")
             self._clear_bo_usr_form()
             self._render_bo_operators_table()
@@ -4454,8 +4513,17 @@ class FlipChartModal(ctk.CTkToplevel):
         direccion = self._ent_cfg_dir.get().strip()
         msg = self._ent_cfg_msg.get().strip()
 
+        if not nom:
+            messagebox.showwarning("Atención", "El Nombre Comercial no puede estar vacío.")
+            return
+
         try:
-            CompanyModel.update(rnc, nom, tel, direccion, msg)
+            res = CompanyModel.update(rnc, nom, tel, direccion, msg)
+            if hasattr(self, 'lbl_brand') and self.lbl_brand:
+                try:
+                    self.lbl_brand.configure(text=f"  {nom.upper()}  |  PUNTO DE VENTA")
+                except Exception:
+                    pass
             messagebox.showinfo("Éxito", "¡Configuración de la empresa guardada exitosamente!")
         except Exception as e:
             messagebox.showerror("Error al Guardar", str(e))
