@@ -54,32 +54,25 @@
                 <span class="text-primary">●</span> LA RUTA DEL ESTE <span class="badge bg-secondary fs-6">WEB</span>
             </a>
             <div class="ms-auto">
-                <a href="/whatsapp" class="btn btn-outline-primary rounded-pill px-4">📱 Consulta WhatsApp Móvil</a>
+                <a href="/login" class="btn btn-outline-success rounded-pill px-4">🔒 Acceso Almacén</a>
             </div>
         </div>
     </nav>
 
     <div class="container my-5">
         <div class="row g-4 mb-4">
-            <div class="col-md-4">
+            <div class="col-md-6">
                 <div class="card-custom">
                     <h6 class="text-secondary">TOTAL PRODUCTOS EN CATALOGO</h6>
                     <h2 class="text-blue font-bold mt-2" id="lbl-total-products">{{ total_products }}</h2>
                     <small class="text-muted">Actualizado en SQL Server</small>
                 </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-6">
                 <div class="card-custom">
                     <h6 class="text-secondary">ALERTAS DE STOCK MÍNIMO</h6>
                     <h2 class="text-warning font-bold mt-2">{{ low_stock_count }}</h2>
                     <small class="text-muted">Productos requiriendo reposición</small>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card-custom">
-                    <h6 class="text-secondary">MOTOR DE BASE DE DATOS</h6>
-                    <h2 class="text-success font-bold mt-2">SQL Server</h2>
-                    <small class="text-muted">POS_LaRuta_DB (SSMS)</small>
                 </div>
             </div>
         </div>
