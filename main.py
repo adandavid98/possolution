@@ -12,6 +12,12 @@ def start_web_thread():
     print("Servidor Web Flask iniciado en segundo plano (http://localhost:5000)")
 
 def main():
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("pos.solution.app.v1")
+    except Exception:
+        pass
+
     print("==========================================================")
     print(" MINIMARKET LA RUTA DEL ESTE, S.R.L. - SISTEMA POS")
     print(" Proyecto Integrador I - UTESA | Base de Datos: SQL Server")

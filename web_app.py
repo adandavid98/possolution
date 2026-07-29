@@ -125,3 +125,14 @@ def run_web_server(port=Config.FLASK_PORT, debug=False):
 
 if __name__ == "__main__":
     run_web_server(debug=True)
+
+import sys
+from flask import send_from_directory
+
+@app.route('/assets/<path:filename>')
+def serve_custom_assets(filename):
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    assets_dir = os.path.join(exe_dir, "assets")
+    if not os.path.exists(assets_dir):
+        assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    return send_from_directory(assets_dir, filename)

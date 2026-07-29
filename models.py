@@ -1,128 +1,275 @@
+import os
+import sys
+import hashlib
 import datetime
-from database import execute_query, get_connection, get_active_db_type
+from database import execute_query, get_active_db_type
+
+_DEPT_CACHE = None
+_SUBDEPT_CACHE = None
+_PROD_CACHE = None
+
+def clear_models_cache():
+    global _DEPT_CACHE, _SUBDEPT_CACHE, _PROD_CACHE
+    _DEPT_CACHE = None
+    _SUBDEPT_CACHE = None
+    _PROD_CACHE = None
+
+def _hash_password(password):
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 ALL_MODULES = [
-    ("pos", "🛒 Caja / POS Billing"),
-    ("inventory", "📦 Inventario & Alertas"),
-    ("caja", "💵 Apertura / Cierre de Caja"),
-    ("reports", "📊 Reportes & Diario Electrónico"),
-    ("backoffice", "💼 Módulo de Back Office"),
-    ("item_maintenance", "🏷️ Mantenimiento de Artículos"),
-    ("customers", "👥 Gestión de Clientes / Suplidores"),
-    ("operators", "🔒 Gestión de Operadores & Permisos"),
-    ("discount", "🏷️ Permitir Descuentos en POS"),
-    ("price_override", "✏️ Permitir Precios Manuales en POS")
+    ("pos", "🛒 Punto de Venta (Caja & Cobros)"),
+    ("productos", "🏷️ Mantenimiento de Artículos & Catálogo"),
+    ("inventory", "📦 Control de Inventario, Stock & Mermas"),
+    ("clientes", "👥 Gestión de Clientes & Proveedores"),
+    ("caja", "💵 Apertura / Cierre & Arqueo de Cajas"),
+    ("reports", "📊 Reportes de Ventas & Exportación PDF/Excel"),
+    ("usuarios", "🔐 Gestión de Operadores & Permisos RBAC"),
+    ("tienda", "🏬 Configuración General de la Tienda"),
+    ("backup", "💾 Respaldo y Restauración de Base de Datos")
 ]
+
+DEFAULT_ROLE_PERMISSIONS = {
+    "Cajero": {
+        "pos": True,
+        "caja": True,
+        "productos": False,
+        "inventory": False,
+        "clientes": False,
+        "reports": False,
+        "usuarios": False,
+        "tienda": False,
+        "backup": False,
+        "backoffice": False
+    },
+    "Almacen": {
+        "pos": False,
+        "caja": False,
+        "productos": True,
+        "inventory": True,
+        "clientes": True,
+        "reports": True,
+        "usuarios": False,
+        "tienda": False,
+        "backup": False,
+        "backoffice": True
+    },
+    "Vendedor": {
+        "pos": True,
+        "caja": False,
+        "productos": False,
+        "inventory": False,
+        "clientes": True,
+        "reports": False,
+        "usuarios": False,
+        "tienda": False,
+        "backup": False,
+        "backoffice": False
+    },
+    "Manager": {
+        "pos": True,
+        "caja": True,
+        "productos": True,
+        "inventory": True,
+        "clientes": True,
+        "reports": True,
+        "usuarios": False,
+        "tienda": False,
+        "backup": False,
+        "backoffice": True
+    },
+    "Supervisor": {
+        "pos": True,
+        "caja": True,
+        "productos": True,
+        "inventory": True,
+        "clientes": True,
+        "reports": True,
+        "usuarios": False,
+        "tienda": False,
+        "backup": False,
+        "backoffice": True
+    },
+    "Admin": {
+        "pos": True, "productos": True, "inventory": True, "clientes": True,
+        "caja": True, "reports": True, "usuarios": True, "tienda": True, "backup": True, "backoffice": True
+    },
+    "Programador": {
+        "pos": True, "productos": True, "inventory": True, "clientes": True,
+        "caja": True, "reports": True, "usuarios": True, "tienda": True, "backup": True, "backoffice": True
+    },
+    "Propietario": {
+        "pos": True, "productos": True, "inventory": True, "clientes": True,
+        "caja": True, "reports": True, "usuarios": True, "tienda": True, "backup": True, "backoffice": True
+    }
+}
 
 class UserModel:
     @staticmethod
-    def authenticate(username, password=""):
-        u_str = str(username).strip()
-        p_str = str(password).strip() if password is not None else ""
-        sql = "SELECT id, username, nombre_completo, rol, activo FROM usuarios WHERE username = ? AND (password_hash = ? OR (password_hash IS NULL AND ? = ''))"
-        user = execute_query(sql, (u_str, p_str, p_str), fetch_one=True)
-        if user and user.get("activo"):
-            return user
-        return None
+    def authenticate(username, password):
+        pwd_hash = _hash_password(password)
+        sql = "SELECT * FROM usuarios WHERE username = ? AND (password_hash = ? OR password_hash = ?) AND (activo = 1 OR activo IS NULL)"
+        return execute_query(sql, (username, pwd_hash, password), fetch_one=True)
 
     @staticmethod
-    def get_all():
-        sql = "SELECT id, username, nombre_completo, rol, activo FROM usuarios ORDER BY id ASC"
+    def get_all(query=""):
+        if query:
+            sql = "SELECT * FROM usuarios WHERE username LIKE ? OR nombre_completo LIKE ? ORDER BY id ASC"
+            q = f"%{query}%"
+            return execute_query(sql, (q, q), fetch_all=True)
+        sql = "SELECT * FROM usuarios ORDER BY id ASC"
         return execute_query(sql, fetch_all=True)
 
     @staticmethod
-    def create(username, password, nombre_completo, rol):
-        u_str = str(username).strip()
-        p_str = str(password).strip() if password is not None else ""
-        if not u_str.isdigit() or not (1 <= len(u_str) <= 6):
-            raise ValueError("El usuario debe ser numérico de 1 a 6 dígitos (ej. 1, 12, 100001).")
-        if p_str:
-            if not p_str.isdigit() or not (1 <= len(p_str) <= 6):
-                raise ValueError("La contraseña/PIN debe ser numérica de 1 a 6 dígitos (o dejarse en blanco).")
-            
+    def create(username, password, nombre_completo, rol="Cajero"):
+        pwd_hash = _hash_password(password)
         sql = "INSERT INTO usuarios (username, password_hash, nombre_completo, rol, activo) VALUES (?, ?, ?, ?, 1)"
-        return execute_query(sql, (u_str, p_str, nombre_completo, rol), commit=True)
+        res = execute_query(sql, (username, pwd_hash, nombre_completo, rol), commit=True)
+        try:
+            u_row = execute_query("SELECT TOP 1 id FROM usuarios WHERE username = ? ORDER BY id DESC", (username,), fetch_one=True)
+            if u_row:
+                u_id = u_row["id"]
+                r_str = str(rol).strip()
+                def_perms = DEFAULT_ROLE_PERMISSIONS.get(r_str)
+                if not def_perms:
+                    r_l = r_str.lower()
+                    if "almacen" in r_l or "almacén" in r_l:
+                        def_perms = DEFAULT_ROLE_PERMISSIONS["Almacen"]
+                    elif "cajero" in r_l:
+                        def_perms = DEFAULT_ROLE_PERMISSIONS["Cajero"]
+                    elif "vendedor" in r_l:
+                        def_perms = DEFAULT_ROLE_PERMISSIONS["Vendedor"]
+                    elif "manager" in r_l or "supervisor" in r_l:
+                        def_perms = DEFAULT_ROLE_PERMISSIONS["Manager"]
+                    else:
+                        def_perms = DEFAULT_ROLE_PERMISSIONS["Cajero"]
+                UserModel.save_permissions(u_id, def_perms)
+        except Exception as e:
+            print("Auto-seeding default permissions note:", e)
+        return res
 
     @staticmethod
-    def update(user_id, password, nombre_completo, rol, activo=1):
-        if password is not None:
-            p_str = str(password).strip()
-            if p_str:
-                if not p_str.isdigit() or not (1 <= len(p_str) <= 6):
-                    raise ValueError("La contraseña/PIN debe ser numérica de 1 a 6 dígitos.")
-            sql = "UPDATE usuarios SET password_hash = ?, nombre_completo = ?, rol = ?, activo = ? WHERE id = ?"
-            return execute_query(sql, (p_str, nombre_completo, rol, activo, user_id), commit=True)
+    def update(user_id, nombre_completo, rol, password=None, activo=1):
+        if password:
+            pwd_hash = _hash_password(password)
+            sql = "UPDATE usuarios SET nombre_completo = ?, rol = ?, password_hash = ?, activo = ? WHERE id = ?"
+            return execute_query(sql, (nombre_completo, rol, pwd_hash, activo, user_id), commit=True)
         else:
             sql = "UPDATE usuarios SET nombre_completo = ?, rol = ?, activo = ? WHERE id = ?"
             return execute_query(sql, (nombre_completo, rol, activo, user_id), commit=True)
 
     @staticmethod
     def delete(user_id):
-        execute_query("DELETE FROM permisos_usuario WHERE usuario_id = ?", (user_id,), commit=True)
         sql = "DELETE FROM usuarios WHERE id = ?"
         return execute_query(sql, (user_id,), commit=True)
 
     @staticmethod
     def get_permissions(user_id):
+        if isinstance(user_id, dict):
+            user_id = user_id.get("id")
+        if not user_id:
+            return {}
         sql = "SELECT modulo_clave, permitido FROM permisos_usuario WHERE usuario_id = ?"
         rows = execute_query(sql, (user_id,), fetch_all=True) or []
-        perm_map = {row["modulo_clave"]: bool(row["permitido"]) for row in rows}
-        return perm_map
+        res = {}
+        for r in rows:
+            res[r["modulo_clave"]] = bool(r["permitido"])
+        return res
 
     @staticmethod
-    def save_permissions(user_id, perm_map):
-        execute_query("DELETE FROM permisos_usuario WHERE usuario_id = ?", (user_id,), commit=True)
-        for key, value in perm_map.items():
-            sql = "INSERT INTO permisos_usuario (usuario_id, modulo_clave, permitido) VALUES (?, ?, ?)"
-            execute_query(sql, (user_id, key, 1 if value else 0), commit=True)
+    def save_permissions(user_id, permissions_dict):
+        if isinstance(user_id, dict):
+            user_id = user_id.get("id")
+        del_sql = "DELETE FROM permisos_usuario WHERE usuario_id = ?"
+        execute_query(del_sql, (user_id,), commit=True)
+        for mod, perm in permissions_dict.items():
+            ins_sql = "INSERT INTO permisos_usuario (usuario_id, modulo_clave, permitido) VALUES (?, ?, ?)"
+            execute_query(ins_sql, (user_id, mod, 1 if perm else 0), commit=True)
 
     @staticmethod
-    def has_permission(user, module_key):
-        if not user:
-            return False
-        rol = str(user.get("rol", "")).strip()
-        if rol in ["Programador", "Admin", "Propietario", "Manager"]:
+    def has_permission(user_or_id, modulo_clave, user_role=None):
+        if isinstance(user_or_id, dict):
+            user_id = user_or_id.get("id")
+            if not user_role:
+                user_role = user_or_id.get("rol")
+        else:
+            user_id = user_or_id
+
+        if user_role in ["Admin", "Programador", "Propietario"]:
             return True
-            
-        user_perms = UserModel.get_permissions(user["id"])
-        if module_key in user_perms:
-            return user_perms[module_key]
 
-        # Default fallbacks by role
-        if rol == "Supervisor":
-            return module_key in ["pos", "inventory", "caja", "reports", "backoffice", "item_maintenance", "customers", "discount"]
-        elif rol == "Almacen":
-            return module_key in ["inventory", "backoffice", "item_maintenance"]
-        elif rol == "Cajero":
-            return module_key in ["pos", "caja", "discount"]
+        perms = UserModel.get_permissions(user_id)
+
+        key_aliases = {
+            "pos": ["pos"],
+            "productos": ["productos", "inventory"],
+            "inventory": ["inventory", "inventario", "productos"],
+            "inventario": ["inventory", "inventario", "productos"],
+            "clientes": ["clientes", "backoffice"],
+            "caja": ["caja", "cajas"],
+            "cajas": ["caja", "cajas"],
+            "reports": ["reports", "reportes"],
+            "reportes": ["reports", "reportes"],
+            "usuarios": ["usuarios", "backoffice"],
+            "tienda": ["tienda", "backoffice"],
+            "backup": ["backup", "backoffice"],
+            "backoffice": ["backoffice", "productos", "clientes", "usuarios", "tienda", "backup"]
+        }
+
+        keys_to_check = key_aliases.get(modulo_clave, [modulo_clave])
+
+        if perms:
+            for k in keys_to_check:
+                if k in perms:
+                    return bool(perms[k])
+
+        default_map = DEFAULT_ROLE_PERMISSIONS.get(user_role)
+        if not default_map:
+            r_str = str(user_role).lower()
+            if "almacen" in r_str or "almacén" in r_str:
+                default_map = DEFAULT_ROLE_PERMISSIONS["Almacen"]
+            elif "cajero" in r_str:
+                default_map = DEFAULT_ROLE_PERMISSIONS["Cajero"]
+            elif "vendedor" in r_str:
+                default_map = DEFAULT_ROLE_PERMISSIONS["Vendedor"]
+            elif "manager" in r_str or "supervisor" in r_str:
+                default_map = DEFAULT_ROLE_PERMISSIONS["Manager"]
+            else:
+                default_map = DEFAULT_ROLE_PERMISSIONS["Cajero"]
+
+        for k in keys_to_check:
+            if k in default_map:
+                return bool(default_map[k])
+
         return False
 
 class CustomerModel:
     @staticmethod
-    def get_all(search_term=""):
-        if search_term:
-            sql = "SELECT * FROM clientes WHERE nombre_razon_social LIKE ? OR rnc_cedula LIKE ? OR codigo LIKE ? ORDER BY id DESC"
-            term = f"%{search_term}%"
+    def get_all(query="", search_term=""):
+        q = query or search_term
+        if q:
+            sql = "SELECT * FROM clientes WHERE codigo LIKE ? OR nombre_razon_social LIKE ? OR rnc_cedula LIKE ? ORDER BY id ASC"
+            term = f"%{q}%"
             return execute_query(sql, (term, term, term), fetch_all=True)
-        sql = "SELECT * FROM clientes ORDER BY id DESC"
+        sql = "SELECT * FROM clientes ORDER BY id ASC"
         return execute_query(sql, fetch_all=True)
 
     @staticmethod
-    def create(codigo, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento=0.0, limite_credito=0.0):
+    def create(codigo, nombre, rnc_cedula="", tipo="General", tel="", email="", direccion="", descuento=0, limite=0):
         sql = """
-            INSERT INTO clientes (codigo, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento, limite_credito)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO clientes (codigo, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento, limite_credito, activo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """
-        return execute_query(sql, (codigo, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento, limite_credito), commit=True)
+        return execute_query(sql, (codigo, nombre, rnc_cedula, tipo, tel, email, direccion, descuento, limite), commit=True)
 
     @staticmethod
-    def update(customer_id, nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento=0.0, limite_credito=0.0):
+    def update(customer_id, codigo, nombre, rnc_cedula="", tipo="General", tel="", email="", direccion="", descuento=0, limite=0):
         sql = """
             UPDATE clientes 
-            SET nombre_razon_social = ?, rnc_cedula = ?, tipo_cliente = ?, telefono = ?, email = ?, direccion = ?, porcentaje_descuento = ?, limite_credito = ?
+            SET codigo = ?, nombre_razon_social = ?, rnc_cedula = ?, tipo_cliente = ?, telefono = ?, email = ?, direccion = ?, porcentaje_descuento = ?, limite_credito = ?
             WHERE id = ?
         """
-        return execute_query(sql, (nombre_razon_social, rnc_cedula, tipo_cliente, telefono, email, direccion, porcentaje_descuento, limite_credito, customer_id), commit=True)
+        return execute_query(sql, (codigo, nombre, rnc_cedula, tipo, tel, email, direccion, descuento, limite, customer_id), commit=True)
 
     @staticmethod
     def delete(customer_id):
@@ -135,10 +282,27 @@ class CompanyModel:
         try:
             sql = "SELECT * FROM configuracion_empresa WHERE id = 1"
             res = execute_query(sql, fetch_one=True)
-            if res:
+            if res and res.get("nombre_comercial"):
                 return res
-        except Exception:
-            pass
+            
+            default_data = {
+                "id": 1, "rnc": "101-00000-1",
+                "nombre_comercial": "Minimarket La Ruta del Este",
+                "telefono": "(809) 555-0199",
+                "direccion": "Av. Principal #45, La Altagracia",
+                "mensaje_factura": "¡Gracias por su compra! Vuelva pronto."
+            }
+            try:
+                seed_sql = """
+                    INSERT INTO configuracion_empresa (id, rnc, nombre_comercial, telefono, direccion, mensaje_factura)
+                    VALUES (1, ?, ?, ?, ?, ?)
+                """
+                execute_query(seed_sql, (default_data["rnc"], default_data["nombre_comercial"], default_data["telefono"], default_data["direccion"], default_data["mensaje_factura"]), commit=True)
+            except Exception:
+                pass
+            return default_data
+        except Exception as e:
+            print("Error in CompanyModel.get():", e)
         return {
             "id": 1, "rnc": "101-00000-1",
             "nombre_comercial": "Minimarket La Ruta del Este",
@@ -149,22 +313,25 @@ class CompanyModel:
 
     @staticmethod
     def update(rnc, nombre_comercial, telefono, direccion, mensaje_factura):
-        sql = """
-            UPDATE configuracion_empresa 
-            SET rnc = ?, nombre_comercial = ?, telefono = ?, direccion = ?, mensaje_factura = ?
-            WHERE id = 1
-        """
-        return execute_query(sql, (rnc, nombre_comercial, telefono, direccion, mensaje_factura), commit=True)
-
-_DEPT_CACHE = None
-_SUBDEPT_CACHE = None
-_PROD_CACHE = None
-
-def clear_models_cache():
-    global _DEPT_CACHE, _SUBDEPT_CACHE, _PROD_CACHE
-    _DEPT_CACHE = None
-    _SUBDEPT_CACHE = None
-    _PROD_CACHE = None
+        try:
+            check_sql = "SELECT id FROM configuracion_empresa WHERE id = 1"
+            exists = execute_query(check_sql, fetch_one=True)
+            if exists:
+                sql = """
+                    UPDATE configuracion_empresa 
+                    SET rnc = ?, nombre_comercial = ?, telefono = ?, direccion = ?, mensaje_factura = ?
+                    WHERE id = 1
+                """
+                return execute_query(sql, (rnc, nombre_comercial, telefono, direccion, mensaje_factura), commit=True)
+            else:
+                sql = """
+                    INSERT INTO configuracion_empresa (id, rnc, nombre_comercial, telefono, direccion, mensaje_factura)
+                    VALUES (1, ?, ?, ?, ?, ?)
+                """
+                return execute_query(sql, (rnc, nombre_comercial, telefono, direccion, mensaje_factura), commit=True)
+        except Exception as e:
+            print("Error in CompanyModel.update():", e)
+            return False
 
 class DepartmentModel:
     @staticmethod
@@ -178,6 +345,10 @@ class DepartmentModel:
         return res
 
     @staticmethod
+    def get_by_department(dept_id=None):
+        return DepartmentModel.get_all()
+
+    @staticmethod
     def create(nombre, descripcion=""):
         clear_models_cache()
         sql = "INSERT INTO departamentos (nombre, descripcion) VALUES (?, ?)"
@@ -189,563 +360,537 @@ class DepartmentModel:
         sql = "UPDATE departamentos SET nombre = ?, descripcion = ? WHERE id = ?"
         return execute_query(sql, (nombre, descripcion, dept_id), commit=True)
 
+    @staticmethod
+    def delete(dept_id):
+        clear_models_cache()
+        sql = "DELETE FROM departamentos WHERE id = ?"
+        return execute_query(sql, (dept_id,), commit=True)
+
 class SubDepartmentModel:
     @staticmethod
-    def get_all():
+    def get_all(dept_id=None):
         global _SUBDEPT_CACHE
-        if _SUBDEPT_CACHE is not None:
+        if _SUBDEPT_CACHE is not None and dept_id is None:
             return _SUBDEPT_CACHE
-        sql = """
-            SELECT sd.*, d.nombre AS departamento_nombre 
-            FROM subdepartamentos sd
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            ORDER BY sd.id ASC
-        """
+        if dept_id:
+            sql = "SELECT * FROM subdepartamentos WHERE departamento_id = ? ORDER BY id ASC"
+            return execute_query(sql, (dept_id,), fetch_all=True)
+        sql = "SELECT * FROM subdepartamentos ORDER BY id ASC"
         res = execute_query(sql, fetch_all=True)
-        _SUBDEPT_CACHE = res
+        if dept_id is None:
+            _SUBDEPT_CACHE = res
         return res
 
     @staticmethod
-    def get_by_department(department_id):
-        subdeps = SubDepartmentModel.get_all()
-        return [sd for sd in subdeps if sd.get('departamento_id') == department_id]
+    def get_by_department(dept_id=None):
+        return SubDepartmentModel.get_all(dept_id)
 
     @staticmethod
-    def create(departamento_id, nombre, descripcion=""):
+    def create(dept_id, nombre, descripcion=""):
         clear_models_cache()
         sql = "INSERT INTO subdepartamentos (departamento_id, nombre, descripcion) VALUES (?, ?, ?)"
-        return execute_query(sql, (departamento_id, nombre, descripcion), commit=True)
+        return execute_query(sql, (dept_id, nombre, descripcion), commit=True)
 
     @staticmethod
-    def update(subdep_id, departamento_id, nombre, descripcion=""):
+    def update(subdept_id, dept_id, nombre, descripcion=""):
         clear_models_cache()
         sql = "UPDATE subdepartamentos SET departamento_id = ?, nombre = ?, descripcion = ? WHERE id = ?"
-        return execute_query(sql, (departamento_id, nombre, descripcion, subdep_id), commit=True)
+        return execute_query(sql, (dept_id, nombre, descripcion, subdept_id), commit=True)
+
+    @staticmethod
+    def delete(subdept_id):
+        clear_models_cache()
+        sql = "DELETE FROM subdepartamentos WHERE id = ?"
+        return execute_query(sql, (subdept_id,), commit=True)
 
 class ProductModel:
     @staticmethod
-    def get_all(search_term="", subdep_id=None, dep_id=None, active_only=False):
+    def get_all(query=""):
         global _PROD_CACHE
-        if not search_term and subdep_id is None and dep_id is None and not active_only:
-            if _PROD_CACHE is not None:
-                return _PROD_CACHE
-
-        params = []
-        conditions = []
-
-        sql = """
-            SELECT p.*, 
-                   sd.nombre AS subdepartamento_nombre,
-                   d.nombre AS departamento_nombre,
-                   c.nombre AS categoria_nombre 
-            FROM productos p 
-            LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            LEFT JOIN categorias c ON p.categoria_id = c.id
-        """
-
-        if search_term:
-            conditions.append("(p.nombre LIKE ? OR p.codigo_barras LIKE ?)")
-            term = f"%{search_term}%"
-            params.extend([term, term])
-
-        if subdep_id:
-            conditions.append("p.subdepartamento_id = ?")
-            params.append(subdep_id)
-
-        if dep_id:
-            conditions.append("sd.departamento_id = ?")
-            params.append(dep_id)
-
-        if active_only:
-            conditions.append("p.estado = 'Activo'")
-
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-
-        sql += " ORDER BY p.nombre ASC"
-        res = execute_query(sql, tuple(params), fetch_all=True)
-        if not search_term and subdep_id is None and dep_id is None:
+        if not query and _PROD_CACHE is not None:
+            return _PROD_CACHE
+        if query:
+            sql = "SELECT p.*, s.nombre as subdepartamento_nombre, d.nombre as departamento_nombre FROM productos p LEFT JOIN subdepartamentos s ON p.subdepartamento_id = s.id LEFT JOIN departamentos d ON s.departamento_id = d.id WHERE p.codigo_barras LIKE ? OR p.nombre LIKE ? ORDER BY p.id ASC"
+            q = f"%{query}%"
+            return execute_query(sql, (q, q), fetch_all=True)
+        sql = "SELECT p.*, s.nombre as subdepartamento_nombre, d.nombre as departamento_nombre FROM productos p LEFT JOIN subdepartamentos s ON p.subdepartamento_id = s.id LEFT JOIN departamentos d ON s.departamento_id = d.id ORDER BY p.id ASC"
+        res = execute_query(sql, fetch_all=True)
+        if not query:
             _PROD_CACHE = res
         return res
 
     @staticmethod
-    def get_recent(limit=20, active_only=False):
-        """Returns the top initial essential products (limit 20)."""
-        extra = "AND (p.estado IS NULL OR p.estado = '' OR p.estado = 'Activo')" if active_only else ""
-        sql = f"""
-            SELECT TOP {limit} p.*,
-                   sd.nombre AS subdepartamento_nombre,
-                   d.nombre AS departamento_nombre,
-                   c.nombre AS categoria_nombre
-            FROM productos p
-            LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            LEFT JOIN categorias c ON p.categoria_id = c.id
-            WHERE 1=1 {extra}
-            ORDER BY p.nombre ASC
-        """
-        return execute_query(sql, (), fetch_all=True) or []
+    def search_live(term="", limit=100, active_only=True, subdep_id=None):
+        sql = "SELECT TOP (?) p.*, s.nombre as subdepartamento_nombre, d.nombre as departamento_nombre, d.id as departamento_id FROM productos p LEFT JOIN subdepartamentos s ON p.subdepartamento_id = s.id LEFT JOIN departamentos d ON s.departamento_id = d.id WHERE 1=1"
+        params = [limit]
+        if term:
+            sql += " AND (p.codigo_barras LIKE ? OR p.nombre LIKE ?)"
+            q = f"%{term}%"
+            params.extend([q, q])
+        if subdep_id:
+            sql += " AND p.subdepartamento_id = ?"
+            params.append(subdep_id)
+        sql += " ORDER BY p.nombre ASC"
+        return execute_query(sql, tuple(params), fetch_all=True) or []
 
     @staticmethod
-    def search_live(term="", limit=100, active_only=False, subdep_id=None):
-        """SQL-level live search — handles search terms and subdepartment filtering."""
-        conditions = []
+    def get_by_id(prod_id):
+        sql = "SELECT p.*, s.nombre as subdepartamento_nombre, d.nombre as departamento_nombre, d.id as departamento_id FROM productos p LEFT JOIN subdepartamentos s ON p.subdepartamento_id = s.id LEFT JOIN departamentos d ON s.departamento_id = d.id WHERE p.id = ?"
+        return execute_query(sql, (prod_id,), fetch_one=True)
+
+    @staticmethod
+    def get_by_barcode(codigo_barras):
+        sql = "SELECT * FROM productos WHERE codigo_barras = ?"
+        return execute_query(sql, (codigo_barras,), fetch_one=True)
+
+    @staticmethod
+    def get_by_codigo(codigo_barras):
+        return ProductModel.get_by_barcode(codigo_barras)
+
+    @staticmethod
+    def get_by_subdepartment(subdep_id):
+        sql = "SELECT * FROM productos WHERE subdepartamento_id = ? ORDER BY nombre ASC"
+        return execute_query(sql, (subdep_id,), fetch_all=True)
+
+    @staticmethod
+    def get_categories():
+        sql = "SELECT * FROM categorias ORDER BY nombre ASC"
+        return execute_query(sql, fetch_all=True) or []
+
+    @staticmethod
+    def get_low_stock_products():
+        sql = "SELECT * FROM productos WHERE stock_actual <= stock_minimo ORDER BY stock_actual ASC"
+        return execute_query(sql, fetch_all=True)
+
+    @staticmethod
+    def save_product(data):
+        clear_models_cache()
+        prod_id = data.get("id")
+        cb = data.get("codigo_barras")
+        nom = data.get("nombre")
+        sub_id = data.get("subdepartamento_id")
+        pc = float(data.get("precio_costo", 0))
+        pv = float(data.get("precio_venta", 0))
+        sa = int(data.get("stock_actual", 0))
+        sm = int(data.get("stock_minimo", 5))
+        fv = data.get("fecha_vencimiento")
+        es_desc = 1 if data.get("es_descontable", True) else 0
+        prec_man = 1 if data.get("precio_manual", False) else 0
+        unid = data.get("unidad_medida", "UD")
+        est = data.get("estado", "Activo")
+
+        if prod_id:
+            sql = """
+                UPDATE productos 
+                SET codigo_barras = ?, nombre = ?, subdepartamento_id = ?, 
+                    precio_costo = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?, 
+                    fecha_vencimiento = ?, es_descontable = ?, precio_manual = ?, 
+                    unidad_medida = ?, estado = ?
+                WHERE id = ?
+            """
+            return execute_query(sql, (cb, nom, sub_id, pc, pv, sa, sm, fv, es_desc, prec_man, unid, est, prod_id), commit=True)
+        else:
+            sql = """
+                INSERT INTO productos (codigo_barras, nombre, subdepartamento_id, precio_costo, precio_venta, stock_actual, stock_minimo, fecha_vencimiento, es_descontable, precio_manual, unidad_medida, estado)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            return execute_query(sql, (cb, nom, sub_id, pc, pv, sa, sm, fv, es_desc, prec_man, unid, est), commit=True)
+
+    @staticmethod
+    def create(codigo_barras, nombre, subdepartamento_id, precio_costo, precio_venta, stock_actual, stock_minimo, fecha_vencimiento=None, es_descontable=1, precio_manual=0, unidad_medida="UD", estado="Activo"):
+        return ProductModel.save_product({
+            "codigo_barras": codigo_barras,
+            "nombre": nombre,
+            "subdepartamento_id": subdepartamento_id,
+            "precio_costo": precio_costo,
+            "precio_venta": precio_venta,
+            "stock_actual": stock_actual,
+            "stock_minimo": stock_minimo,
+            "fecha_vencimiento": fecha_vencimiento,
+            "es_descontable": es_descontable,
+            "precio_manual": precio_manual,
+            "unidad_medida": unidad_medida,
+            "estado": estado
+        })
+
+    @staticmethod
+    def update(prod_id, codigo_barras, nombre, subdepartamento_id, precio_costo, precio_venta, stock_actual, stock_minimo, fecha_vencimiento=None, es_descontable=1, precio_manual=0, unidad_medida="UD", estado="Activo"):
+        return ProductModel.save_product({
+            "id": prod_id,
+            "codigo_barras": codigo_barras,
+            "nombre": nombre,
+            "subdepartamento_id": subdepartamento_id,
+            "precio_costo": precio_costo,
+            "precio_venta": precio_venta,
+            "stock_actual": stock_actual,
+            "stock_minimo": stock_minimo,
+            "fecha_vencimiento": fecha_vencimiento,
+            "es_descontable": es_descontable,
+            "precio_manual": precio_manual,
+            "unidad_medida": unidad_medida,
+            "estado": estado
+        })
+
+    @staticmethod
+    def delete(prod_id):
+        clear_models_cache()
+        sql = "DELETE FROM productos WHERE id = ?"
+        return execute_query(sql, (prod_id,), commit=True)
+
+    @staticmethod
+    def delete_product(prod_id):
+        return ProductModel.delete(prod_id)
+
+    @staticmethod
+    def update_stock(prod_id, delta_stock):
+        clear_models_cache()
+        sql = "UPDATE productos SET stock_actual = stock_actual + ? WHERE id = ?"
+        return execute_query(sql, (delta_stock, prod_id), commit=True)
+
+class CajaModel:
+    @staticmethod
+    def get_active(user_id=None):
+        if user_id:
+            sql = "SELECT TOP 1 * FROM cajas WHERE usuario_id = ? AND estado = 'Abierta' ORDER BY id DESC"
+            return execute_query(sql, (user_id,), fetch_one=True)
+        sql = "SELECT TOP 1 * FROM cajas WHERE estado = 'Abierta' ORDER BY id DESC"
+        return execute_query(sql, fetch_one=True)
+
+    @staticmethod
+    def get_active_caja(user_id=None):
+        return CajaModel.get_active(user_id)
+
+    @staticmethod
+    def abrir(user_id, monto_inicial):
+        sql = "INSERT INTO cajas (usuario_id, monto_inicial, fecha_apertura, estado) VALUES (?, ?, GETDATE(), 'Abierta')"
+        return execute_query(sql, (user_id, monto_inicial), commit=True)
+
+    @staticmethod
+    def abrir_caja(user_id, monto_inicial):
+        CajaModel.abrir(user_id, monto_inicial)
+        return CajaModel.get_active(user_id)
+
+    @staticmethod
+    def cerrar(caja_id, monto_final_real):
+        sql = "UPDATE cajas SET monto_final_real = ?, fecha_cierre = GETDATE(), estado = 'Cerrada' WHERE id = ?"
+        return execute_query(sql, (monto_final_real, caja_id), commit=True)
+
+    @staticmethod
+    def cerrar_caja(caja_id, monto_final_real):
+        return CajaModel.cerrar(caja_id, monto_final_real)
+
+    @staticmethod
+    def get_all():
+        sql = "SELECT * FROM cajas ORDER BY id DESC"
+        return execute_query(sql, fetch_all=True)
+
+class VentaModel:
+    @staticmethod
+    def create(codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total, items):
+        clear_models_cache()
+        now_dt = datetime.datetime.now()
+        sql_v = """
+            INSERT INTO ventas (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis_impuesto, total, fecha)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        execute_query(sql_v, (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total, now_dt), commit=True)
+        
+        sql_last = "SELECT TOP 1 id FROM ventas WHERE codigo_factura = ?"
+        v_row = execute_query(sql_last, (codigo_factura,), fetch_one=True)
+        if not v_row:
+            return None
+        venta_id = v_row["id"]
+
+        norm_items = []
+        for item in items:
+            p_id = item.get("id") or item.get("producto_id")
+            qty = int(item.get("qty") or item.get("cantidad", 1))
+            p_unit = float(item.get("price") or item.get("precio_venta") or item.get("precio_unitario", 0))
+            p_cost = float(item.get("precio_costo", 0))
+            desc = float(item.get("descuento", 0))
+            item_name = item.get("nombre") or item.get("producto_nombre", "Producto")
+            item_sub = (qty * p_unit) - desc
+
+            sql_d = """
+                INSERT INTO detalle_ventas (venta_id, producto_id, cantidad, precio_unitario, precio_costo, descuento, subtotal)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+            execute_query(sql_d, (venta_id, p_id, qty, p_unit, p_cost, desc, item_sub), commit=True)
+            ProductModel.update_stock(p_id, -qty)
+
+            norm_items.append({
+                "producto_id": p_id,
+                "id": p_id,
+                "nombre": item_name,
+                "producto_nombre": item_name,
+                "cantidad": qty,
+                "qty": qty,
+                "precio_unitario": p_unit,
+                "precio_venta": p_unit,
+                "price": p_unit,
+                "precio_costo": p_cost,
+                "descuento": desc,
+                "subtotal": item_sub
+            })
+
+        return {
+            "id": venta_id,
+            "codigo_factura": codigo_factura,
+            "caja_id": caja_id,
+            "usuario_id": usuario_id,
+            "cliente_nombre": cliente_nombre,
+            "tipo_pago": tipo_pago,
+            "subtotal": float(subtotal),
+            "itbis": float(itbis),
+            "itbis_impuesto": float(itbis),
+            "total": float(total),
+            "fecha": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "items": norm_items
+        }
+
+    @staticmethod
+    def procesar_venta(*args, **kwargs):
+        """Flexible adapter handling both dictionary and positional call styles."""
+        if len(args) == 1 and isinstance(args[0], dict):
+            sale_data = args[0]
+            caja_id = sale_data.get("caja_id")
+            usuario_id = sale_data.get("usuario_id")
+            cliente_nombre = sale_data.get("cliente_nombre", "Cliente General")
+            tipo_pago = sale_data.get("tipo_pago", "Efectivo")
+            items = sale_data.get("items", [])
+            codigo_factura = sale_data.get("codigo_factura")
+            subtotal = sale_data.get("subtotal")
+            itbis = sale_data.get("itbis") or sale_data.get("itbis_impuesto")
+            total = sale_data.get("total")
+        elif len(args) == 5:
+            caja_id, usuario_id, cliente_nombre, tipo_pago, items = args
+            codigo_factura = None
+            subtotal = None
+            itbis = None
+            total = None
+        elif len(args) >= 8:
+            codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total = args[:8]
+            items = args[8] if len(args) > 8 else []
+        else:
+            sale_data = kwargs
+            caja_id = sale_data.get("caja_id")
+            usuario_id = sale_data.get("usuario_id")
+            cliente_nombre = sale_data.get("cliente_nombre", "Cliente General")
+            tipo_pago = sale_data.get("tipo_pago", "Efectivo")
+            items = sale_data.get("items", [])
+            codigo_factura = sale_data.get("codigo_factura")
+            subtotal = sale_data.get("subtotal")
+            itbis = sale_data.get("itbis") or sale_data.get("itbis_impuesto")
+            total = sale_data.get("total")
+
+        if not codigo_factura:
+            codigo_factura = f"FAC-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        if subtotal is None or total is None:
+            calc_subtotal = 0.0
+            calc_itbis = 0.0
+            for item in items:
+                q = float(item.get("qty") or item.get("cantidad", 1))
+                p = float(item.get("price") or item.get("precio_venta") or item.get("precio_unitario", 0))
+                d = float(item.get("descuento", 0))
+                calc_subtotal += (q * p) - d
+                calc_itbis += float(item.get("itbis", (q * p - d) * 0.18))
+
+            subtotal = calc_subtotal
+            if itbis is None:
+                itbis = calc_itbis
+            total = subtotal + itbis
+
+        return VentaModel.create(codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total, items)
+
+    @staticmethod
+    def get_all(search_query=""):
+        if search_query:
+            sql = "SELECT * FROM ventas WHERE codigo_factura LIKE ? OR cliente_nombre LIKE ? ORDER BY id DESC"
+            q = f"%{search_query}%"
+            return execute_query(sql, (q, q), fetch_all=True)
+        sql = "SELECT * FROM ventas ORDER BY id DESC"
+        return execute_query(sql, fetch_all=True)
+
+    @staticmethod
+    def get_by_id(venta_id):
+        sql_v = "SELECT * FROM ventas WHERE id = ?"
+        v = execute_query(sql_v, (venta_id,), fetch_one=True)
+        if not v:
+            return None
+        sql_d = "SELECT d.*, p.nombre as producto_nombre, p.codigo_barras FROM detalle_ventas d JOIN productos p ON d.producto_id = p.id WHERE d.venta_id = ?"
+        items = execute_query(sql_d, (venta_id,), fetch_all=True)
+        v["items"] = items
+        return v
+
+class InventoryMovementModel:
+    @staticmethod
+    def log(prod_id, tipo_mov, cantidad, motivo="", user_id=None):
+        clear_models_cache()
+        sql = """
+            INSERT INTO movimientos_inventario (producto_id, tipo_movimiento, cantidad, motivo, usuario_id, fecha)
+            VALUES (?, ?, ?, ?, ?, GETDATE())
+        """
+        res = execute_query(sql, (prod_id, tipo_mov, cantidad, motivo, user_id), commit=True)
+        
+        if tipo_mov in ["Entrada Suplidor", "Entrada"]:
+            ProductModel.update_stock(prod_id, cantidad)
+        elif tipo_mov in ["Salida/Ajuste", "Mermas/Vencido", "Salida"]:
+            ProductModel.update_stock(prod_id, -abs(cantidad))
+        return res
+
+    @staticmethod
+    def registrar_movimiento(prod_id, tipo_mov, cantidad, motivo="", user_id=None):
+        return InventoryMovementModel.log(prod_id, tipo_mov, cantidad, motivo, user_id)
+
+    @staticmethod
+    def get_all(prod_id=None):
+        if prod_id:
+            sql = "SELECT m.*, p.nombre as producto_nombre FROM movimientos_inventario m JOIN productos p ON m.producto_id = p.id WHERE m.producto_id = ? ORDER BY m.id DESC"
+            return execute_query(sql, (prod_id,), fetch_all=True)
+        sql = "SELECT m.*, p.nombre as producto_nombre FROM movimientos_inventario m JOIN productos p ON m.producto_id = p.id ORDER BY m.id DESC"
+        return execute_query(sql, fetch_all=True)
+
+class ReportModel:
+    @staticmethod
+    def _parse_dates(start_date, end_date):
         params = []
+        where_clause = ""
+        s_str = None
+        e_str = None
 
-        if term:
-            t = f"%{term}%"
-            conditions.append("(p.nombre LIKE ? OR p.codigo_barras LIKE ?)")
-            params.extend([t, t])
+        if start_date:
+            s_s = str(start_date).strip()
+            if len(s_s) == 10:
+                s_str = f"{s_s} 00:00:00"
+            else:
+                s_str = s_s
 
-        if active_only:
-            conditions.append("(p.estado IS NULL OR p.estado = '' OR p.estado = 'Activo')")
+        if end_date:
+            e_s = str(end_date).strip()
+            if len(e_s) == 10:
+                e_str = f"{e_s} 23:59:59"
+            else:
+                e_str = e_s
 
-        if subdep_id is not None:
-            conditions.append("p.subdepartamento_id = ?")
-            params.append(subdep_id)
+        if s_str and e_str:
+            where_clause = " WHERE v.fecha >= ? AND v.fecha <= ?"
+            params = [s_str, e_str]
+        elif s_str:
+            where_clause = " WHERE v.fecha >= ?"
+            params = [s_str]
+        elif e_str:
+            where_clause = " WHERE v.fecha <= ?"
+            params = [e_str]
 
-        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-        eff_limit = limit if (term or subdep_id is not None) else 20
+        return where_clause, params
 
-        sql = f"""
-            SELECT TOP {eff_limit} p.*,
-                   sd.nombre AS subdepartamento_nombre,
-                   d.nombre AS departamento_nombre,
-                   c.nombre AS categoria_nombre
-            FROM productos p
-            LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            LEFT JOIN categorias c ON p.categoria_id = c.id
+    @staticmethod
+    def get_sales_summary(start_date=None, end_date=None):
+        where, params = ReportModel._parse_dates(start_date, end_date)
+        sql = f"SELECT COUNT(*) as total_ventas, SUM(total) as monto_total, SUM(subtotal) as subtotal, SUM(itbis_impuesto) as total_itbis FROM ventas v{where}"
+        res = execute_query(sql, tuple(params), fetch_one=True)
+        return res or {"total_ventas": 0, "monto_total": 0, "subtotal": 0, "total_itbis": 0}
+
+    @staticmethod
+    def get_dashboard_metrics(start_date=None, end_date=None):
+        v_res = ReportModel.get_sales_summary(start_date, end_date)
+        p_res = execute_query("SELECT COUNT(*) as total_prods FROM productos", fetch_one=True)
+        c_res = execute_query("SELECT COUNT(*) as total_clientes FROM clientes", fetch_one=True)
+        return {
+            "total_ventas": v_res.get("total_ventas", 0) if v_res else 0,
+            "monto_total": float(v_res.get("monto_total", 0) or 0) if v_res else 0,
+            "total_productos": p_res.get("total_prods", 0) if p_res else 0,
+            "total_clientes": c_res.get("total_clientes", 0) if c_res else 0
+        }
+
+    @staticmethod
+    def get_executive_summary(start_date=None, end_date=None):
+        where, params = ReportModel._parse_dates(start_date, end_date)
+        sql_summary = f"""
+            SELECT 
+                COUNT(*) as total_tx,
+                ISNULL(SUM(v.subtotal), 0) as total_sub,
+                ISNULL(SUM(v.itbis_impuesto), 0) as total_itb,
+                ISNULL(SUM(v.total), 0) as total_ing
+            FROM ventas v
             {where}
-            ORDER BY p.nombre ASC
+        """
+        row_s = execute_query(sql_summary, tuple(params), fetch_one=True) or {}
+
+        sql_cost = f"""
+            SELECT ISNULL(SUM(dv.cantidad * dv.precio_costo), 0) as total_cost
+            FROM detalle_ventas dv
+            JOIN ventas v ON dv.venta_id = v.id
+            {where}
+        """
+        row_c = execute_query(sql_cost, tuple(params), fetch_one=True) or {}
+
+        tx = row_s.get("total_tx", 0)
+        sub = float(row_s.get("total_sub") or 0)
+        itb = float(row_s.get("total_itb") or 0)
+        ing = float(row_s.get("total_ing") or 0)
+        cost = float(row_c.get("total_cost") or 0)
+
+        ganancia = sub - cost
+        ticket_avg = (ing / tx) if tx > 0 else 0.0
+
+        p_res = execute_query("SELECT COUNT(*) as total_prods FROM productos", fetch_one=True)
+        c_res = execute_query("SELECT COUNT(*) as total_clientes FROM clientes", fetch_one=True)
+
+        return {
+            "total_transacciones": tx,
+            "total_ventas": tx,
+            "total_ingresos": ing,
+            "monto_total": ing,
+            "total_subtotal": sub,
+            "total_itbis": itb,
+            "costo_total_estimado": cost,
+            "ganancia_estimada": ganancia,
+            "ticket_promedio": ticket_avg,
+            "total_productos": p_res.get("total_prods", 0) if p_res else 0,
+            "total_clientes": c_res.get("total_clientes", 0) if c_res else 0
+        }
+
+    @staticmethod
+    def get_electronic_journal(start_date=None, end_date=None):
+        where, params = ReportModel._parse_dates(start_date, end_date)
+        sql = f"""
+            SELECT v.*, u.nombre_completo as usuario_nombre 
+            FROM ventas v 
+            LEFT JOIN usuarios u ON v.usuario_id = u.id 
+            {where}
+            ORDER BY v.id DESC
         """
         return execute_query(sql, tuple(params), fetch_all=True) or []
 
     @staticmethod
-    def get_by_id(product_id):
-        sql = "SELECT * FROM productos WHERE id = ?"
-        return execute_query(sql, (product_id,), fetch_one=True)
-
-    @staticmethod
-    def get_by_subdepartment(subdep_id):
-        all_prods = ProductModel.get_all()
-        return [p for p in all_prods if p.get('subdepartamento_id') == subdep_id]
-
-    @staticmethod
-    def save_product(data):
-        """Creates or updates a product."""
-        clear_models_cache()
-        subdep_id = data.get("subdepartamento_id", None)
-        es_desc = 1 if data.get("es_descontable", True) else 0
-        precio_man = 1 if data.get("precio_manual", False) else 0
-        unidad = data.get("unidad_medida", "UD")
-        estado = data.get("estado", "Activo")
-
-        if "id" in data and data["id"]:
-            sql = """
-                UPDATE productos 
-                SET codigo_barras = ?, nombre = ?, subdepartamento_id = ?, precio_costo = ?, precio_venta = ?, stock_actual = ?, stock_minimo = ?, es_descontable = ?, precio_manual = ?, unidad_medida = ?, estado = ?
-                WHERE id = ?
-            """
-            params = (
-                data["codigo_barras"], data["nombre"], subdep_id,
-                data["precio_costo"], data["precio_venta"], data["stock_actual"],
-                data["stock_minimo"], es_desc, precio_man, unidad, estado, data["id"]
-            )
-            execute_query(sql, params, commit=True)
-            return data["id"]
-        else:
-            sql = """
-                INSERT INTO productos (codigo_barras, nombre, subdepartamento_id, precio_costo, precio_venta, stock_actual, stock_minimo, es_descontable, precio_manual, unidad_medida, estado)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            params = (
-                data["codigo_barras"], data["nombre"], subdep_id,
-                data["precio_costo"], data["precio_venta"], data["stock_actual"],
-                data["stock_minimo"], es_desc, precio_man, unidad, estado
-            )
-            new_id = execute_query(sql, params, commit=True)
-            if isinstance(new_id, int) and new_id > 0:
-                return new_id
-            res = execute_query("SELECT MAX(id) AS new_id FROM productos", fetch_one=True)
-            return res["new_id"]
-
-    @staticmethod
-    def delete_product(product_id):
-        clear_models_cache()
-        sql = "DELETE FROM productos WHERE id = ?"
-        execute_query(sql, (product_id,), commit=True)
-
-    @staticmethod
-    def get_categories():
-        return execute_query("SELECT * FROM categorias ORDER BY nombre ASC", fetch_all=True)
-
-    @staticmethod
-    def get_low_stock_products():
-        sql = """
-            SELECT p.*, 
-                   sd.nombre AS subdepartamento_nombre,
-                   d.nombre AS departamento_nombre
-            FROM productos p 
-            LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            WHERE p.stock_actual <= p.stock_minimo
-            ORDER BY p.stock_actual ASC
-        """
-        return execute_query(sql, fetch_all=True)
-
-class CajaModel:
-    @staticmethod
-    def get_active_caja(user_id=None):
-        if get_active_db_type() == "SQL Server":
-            if user_id:
-                sql = "SELECT TOP 1 * FROM cajas WHERE usuario_id = ? AND estado = 'Abierta' ORDER BY fecha_apertura DESC"
-                return execute_query(sql, (user_id,), fetch_one=True)
-            else:
-                sql = "SELECT TOP 1 * FROM cajas WHERE estado = 'Abierta' ORDER BY fecha_apertura DESC"
-                return execute_query(sql, fetch_one=True)
-        else:
-            if user_id:
-                sql = "SELECT * FROM cajas WHERE usuario_id = ? AND estado = 'Abierta' ORDER BY fecha_apertura DESC LIMIT 1"
-                return execute_query(sql, (user_id,), fetch_one=True)
-            else:
-                sql = "SELECT * FROM cajas WHERE estado = 'Abierta' ORDER BY fecha_apertura DESC LIMIT 1"
-                return execute_query(sql, fetch_one=True)
-
-    @staticmethod
-    def abrir_caja(user_id, monto_inicial):
-        sql = "INSERT INTO cajas (usuario_id, monto_inicial, estado) VALUES (?, ?, 'Abierta')"
-        execute_query(sql, (user_id, monto_inicial), commit=True)
-        return CajaModel.get_active_caja(user_id)
-
-    @staticmethod
-    def cerrar_caja(caja_id, monto_real):
-        # Calculate theoretical total
-        sales = execute_query(
-            "SELECT COALESCE(SUM(total), 0) AS total_ventas FROM ventas WHERE caja_id = ?", 
-            (caja_id,), fetch_one=True
-        )
-        caja = execute_query("SELECT monto_inicial FROM cajas WHERE id = ?", (caja_id,), fetch_one=True)
-        
-        monto_teorico = float(caja["monto_inicial"]) + float(sales["total_ventas"])
-        
-        if get_active_db_type() == "SQL Server":
-            sql = """
-                UPDATE cajas 
-                SET monto_final_teorico = ?, monto_final_real = ?, fecha_cierre = GETDATE(), estado = 'Cerrada'
-                WHERE id = ?
-            """
-        else:
-            sql = """
-                UPDATE cajas 
-                SET monto_final_teorico = ?, monto_final_real = ?, fecha_cierre = datetime('now', 'localtime'), estado = 'Cerrada'
-                WHERE id = ?
-            """
-        execute_query(sql, (monto_teorico, monto_real, caja_id), commit=True)
-        return {
-            "monto_teorico": monto_teorico,
-            "monto_real": monto_real,
-            "diferencia": monto_real - monto_teorico
-        }
-
-class VentaModel:
-    @staticmethod
-    def procesar_venta(caja_id, usuario_id, cliente_nombre, tipo_pago, items):
-        """
-        Executes a sale atomically across tables:
-        ventas -> detalle_ventas -> productos (update stock) -> movimientos_inventario.
-        """
-        if not items:
-            raise ValueError("El carrito de compras está vacío.")
-
-        conn, db_type = get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            # Subtotal, ITBIS (18%), Total
-            subtotal = sum(item["precio_venta"] * item["cantidad"] for item in items)
-            itbis = subtotal * 0.18
-            total = subtotal + itbis
-            
-            codigo_factura = f"FAC-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-
-            if db_type == "sqlite":
-                sql_venta = """
-                    INSERT INTO ventas (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis_impuesto, total)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """
-                cursor.execute(sql_venta, (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total))
-                venta_id = cursor.lastrowid
-            else:
-                sql_venta = """
-                    INSERT INTO ventas (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis_impuesto, total)
-                    OUTPUT INSERTED.id
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """
-                cursor.execute(sql_venta, (codigo_factura, caja_id, usuario_id, cliente_nombre, tipo_pago, subtotal, itbis, total))
-                row_id = cursor.fetchone()
-                venta_id = row_id[0] if row_id else None
-
-            # 2. Insert details & update stock
-            for item in items:
-                prod_id = item["id"]
-                cant = item["cantidad"]
-                precio = item["precio_venta"]
-                subtotal_item = precio * cant
-
-                # Check current stock and get cost price
-                cursor.execute("SELECT stock_actual, nombre, precio_costo FROM productos WHERE id = ?", (prod_id,))
-                prod_db = cursor.fetchone()
-                if isinstance(prod_db, dict) or hasattr(prod_db, 'keys'):
-                    stock_val = prod_db["stock_actual"]
-                    prod_name = prod_db["nombre"]
-                    costo_unitario = float(prod_db.get("precio_costo") or 0)
-                else:
-                    stock_val = prod_db[0]
-                    prod_name = prod_db[1]
-                    costo_unitario = float(prod_db[2]) if len(prod_db) > 2 else 0.0
-
-                if not prod_db or stock_val < cant:
-                    raise ValueError(f"Stock insuficiente para {prod_name}. Disponible: {stock_val}")
-
-                # Detail insert - include precio_costo and descuento
-                descuento_item = float(item.get("descuento", 0) or 0)
-                try:
-                    cursor.execute("""
-                        INSERT INTO detalle_ventas (venta_id, producto_id, cantidad, precio_unitario, precio_costo, descuento, subtotal)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (venta_id, prod_id, cant, precio, costo_unitario, descuento_item, subtotal_item))
-                except Exception:
-                    # Fallback without new columns for older schemas
-                    cursor.execute("""
-                        INSERT INTO detalle_ventas (venta_id, producto_id, cantidad, precio_unitario, subtotal)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (venta_id, prod_id, cant, precio, subtotal_item))
-
-                # Update stock
-                cursor.execute("""
-                    UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?
-                """, (cant, prod_id))
-
-                # Record movement
-                cursor.execute("""
-                    INSERT INTO movimientos_inventario (producto_id, tipo_movimiento, cantidad, motivo, usuario_id)
-                    VALUES (?, 'Salida/Ajuste', ?, ?, ?)
-                """, (prod_id, cant, f"Venta Factura #{codigo_factura}", usuario_id))
-
-            conn.commit()
-            return {
-                "venta_id": venta_id,
-                "codigo_factura": codigo_factura,
-                "cliente_nombre": cliente_nombre,
-                "tipo_pago": tipo_pago,
-                "subtotal": subtotal,
-                "itbis": itbis,
-                "total": total,
-                "items": items,
-                "fecha": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-            conn.close()
-
-class InventoryMovementModel:
-    @staticmethod
-    def registrar_movimiento(producto_id, tipo_movimiento, cantidad, motivo, usuario_id):
-        conn, _ = get_connection()
-        cursor = conn.cursor()
-        try:
-            # 1. Insert Movement
-            cursor.execute("""
-                INSERT INTO movimientos_inventario (producto_id, tipo_movimiento, cantidad, motivo, usuario_id)
-                VALUES (?, ?, ?, ?, ?)
-            """, (producto_id, tipo_movimiento, cantidad, motivo, usuario_id))
-
-            # 2. Adjust Stock
-            if tipo_movimiento == "Entrada Suplidor":
-                cursor.execute("UPDATE productos SET stock_actual = stock_actual + ? WHERE id = ?", (cantidad, producto_id))
-            else:
-                cursor.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE id = ?", (cantidad, producto_id))
-
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-            conn.close()
-
-    @staticmethod
-    def get_recent_movements(limit=20):
-        if get_active_db_type() == "SQL Server":
-            sql = """
-                SELECT TOP (?) m.*, p.nombre AS producto_nombre, u.username AS usuario_nombre
-                FROM movimientos_inventario m
-                LEFT JOIN productos p ON m.producto_id = p.id
-                LEFT JOIN usuarios u ON m.usuario_id = u.id
-                ORDER BY m.fecha DESC
-            """
-            return execute_query(sql, (limit,), fetch_all=True)
-        else:
-            sql = """
-                SELECT m.*, p.nombre AS producto_nombre, u.username AS usuario_nombre
-                FROM movimientos_inventario m
-                LEFT JOIN productos p ON m.producto_id = p.id
-                LEFT JOIN usuarios u ON m.usuario_id = u.id
-                ORDER BY m.fecha DESC
-                LIMIT ?
-            """
-            return execute_query(sql, (limit,), fetch_all=True)
-
-
-class ReportModel:
-    @staticmethod
-    def get_date_range_bounds(period_type, start_date=None, end_date=None):
-        today = datetime.date.today()
-        p = str(period_type or '').strip()
-
-        def to_iso_date(d_str):
-            if not d_str: return today
-            d_str = str(d_str).strip()
-            for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
-                try:
-                    return datetime.datetime.strptime(d_str, fmt).date()
-                except ValueError:
-                    pass
-            return today
-
-        if p in ["Día", "Hoy"]:
-            s = e = today
-        elif p in ["Semana", "Esta Semana"]:
-            s = today - datetime.timedelta(days=today.weekday())
-            e = today
-        elif p in ["Mes", "Este Mes"]:
-            s = today.replace(day=1)
-            e = today
-        elif p in ["Año", "Este Año"]:
-            s = today.replace(month=1, day=1)
-            e = today
-        elif p == "Personalizado" and start_date and end_date:
-            s = to_iso_date(start_date)
-            e = to_iso_date(end_date)
-        else:
-            s = e = today
-
-        return f"{s} 00:00:00", f"{e} 23:59:59" 
-
-    @staticmethod
-    def get_executive_summary(start_dt, end_dt):
-        sql = """
+    def get_multi_total_store_report(start_date=None, end_date=None):
+        where, params = ReportModel._parse_dates(start_date, end_date)
+        sql_pay = f"""
             SELECT 
-                COUNT(*) AS total_transacciones,
-                COALESCE(SUM(v.subtotal), 0) AS total_subtotal,
-                COALESCE(SUM(v.itbis_impuesto), 0) AS total_itbis,
-                COALESCE(SUM(v.total), 0) AS total_ingresos,
-                COALESCE(SUM(dv_margin.costo_total), 0) AS costo_total_estimado,
-                (COALESCE(SUM(v.subtotal), 0) - COALESCE(SUM(dv_margin.costo_total), 0)) AS ganancia_estimada
+                ISNULL(v.tipo_pago, 'Efectivo') as tipo_pago,
+                COUNT(*) as total_operaciones,
+                ISNULL(SUM(v.subtotal), 0) as subtotal,
+                ISNULL(SUM(v.itbis_impuesto), 0) as itbis,
+                ISNULL(SUM(v.total), 0) as total_monto
             FROM ventas v
-            LEFT JOIN (
-                SELECT venta_id, SUM(COALESCE(precio_costo, 0) * cantidad) AS costo_total
-                FROM detalle_ventas
-                GROUP BY venta_id
-            ) dv_margin ON v.id = dv_margin.venta_id
-            WHERE v.fecha >= ? AND v.fecha <= ?
+            {where}
+            GROUP BY v.tipo_pago
         """
-        try:
-            res = execute_query(sql, (start_dt, end_dt), fetch_one=True)
-        except Exception:
-            # Fallback without cost calculation if column issue
-            sql_simple = """
-                SELECT 
-                    COUNT(*) AS total_transacciones,
-                    COALESCE(SUM(subtotal), 0) AS total_subtotal,
-                    COALESCE(SUM(itbis_impuesto), 0) AS total_itbis,
-                    COALESCE(SUM(total), 0) AS total_ingresos,
-                    0 AS costo_total_estimado,
-                    COALESCE(SUM(subtotal), 0) AS ganancia_estimada
-                FROM ventas
-                WHERE fecha >= ? AND fecha <= ?
-            """
-            res = execute_query(sql_simple, (start_dt, end_dt), fetch_one=True)
+        by_payment = execute_query(sql_pay, tuple(params), fetch_all=True) or []
 
-        if not res or not res.get("total_transacciones"):
-            return {
-                "total_transacciones": 0,
-                "total_subtotal": 0.0,
-                "total_itbis": 0.0,
-                "total_ingresos": 0.0,
-                "costo_total_estimado": 0.0,
-                "ganancia_estimada": 0.0,
-                "ticket_promedio": 0.0
-            }
-
-        tot_cnt = int(res["total_transacciones"] or 0)
-        tot_ing = float(res["total_ingresos"] or 0)
-        res["ticket_promedio"] = tot_ing / tot_cnt if tot_cnt > 0 else 0.0
-        # Ensure all keys are float-safe
-        for k in ["total_subtotal", "total_itbis", "total_ingresos", "costo_total_estimado", "ganancia_estimada"]:
-            res[k] = float(res.get(k) or 0)
-        return res
-
-    @staticmethod
-    def get_department_subdepartment_sales(start_dt, end_dt):
-        sql = """
+        sql_usr = f"""
             SELECT 
-                COALESCE(d.nombre, 'Sin Departamento') AS departamento,
-                COALESCE(sd.nombre, 'Sin Sub-Depto') AS subdepartamento,
-                SUM(dv.cantidad) AS unidades_vendidas,
-                SUM(dv.subtotal) AS total_bruto,
-                SUM(dv.subtotal * 0.18) AS itbis_estimado,
-                SUM(dv.subtotal * 1.18) AS total_neto,
-                SUM(COALESCE(dv.precio_costo, 0) * dv.cantidad) AS costo_total,
-                (SUM(dv.subtotal) - SUM(COALESCE(dv.precio_costo, 0) * dv.cantidad)) AS ganancia_estimada
-            FROM detalle_ventas dv
-            JOIN ventas v ON dv.venta_id = v.id
-            JOIN productos p ON dv.producto_id = p.id
-            LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            WHERE v.fecha >= ? AND v.fecha <= ?
-            GROUP BY d.nombre, sd.nombre
-            ORDER BY SUM(dv.subtotal) DESC
-        """
-        try:
-            rows = execute_query(sql, (start_dt, end_dt), fetch_all=True)
-        except Exception:
-            rows = []
-        return rows if rows else []
-
-    @staticmethod
-    def get_multi_total_store_report(start_dt, end_dt):
-        sql_payment = """
-            SELECT 
-                COALESCE(tipo_pago, 'Efectivo') AS tipo_pago,
-                COUNT(*) AS total_operaciones,
-                SUM(subtotal) AS subtotal,
-                SUM(itbis_impuesto) AS itbis,
-                SUM(total) AS total_monto
-            FROM ventas
-            WHERE fecha >= ? AND fecha <= ?
-            GROUP BY tipo_pago
-            ORDER BY total_monto DESC
-        """
-        by_payment = execute_query(sql_payment, (start_dt, end_dt), fetch_all=True)
-
-        sql_user = """
-            SELECT 
-                COALESCE(u.username, 'Cajero General') AS cajero,
-                COUNT(v.id) AS total_ventas,
-                SUM(v.total) AS total_monto
+                ISNULL(u.nombre_completo, 'Cajero General') as cajero,
+                COUNT(*) as total_ventas,
+                ISNULL(SUM(v.total), 0) as total_monto
             FROM ventas v
             LEFT JOIN usuarios u ON v.usuario_id = u.id
-            WHERE v.fecha >= ? AND v.fecha <= ?
-            GROUP BY u.username
-            ORDER BY total_monto DESC
+            {where}
+            GROUP BY u.nombre_completo
         """
-        by_user = execute_query(sql_user, (start_dt, end_dt), fetch_all=True)
+        by_user = execute_query(sql_usr, tuple(params), fetch_all=True) or []
 
         return {
             "by_payment": by_payment,
@@ -753,60 +898,76 @@ class ReportModel:
         }
 
     @staticmethod
-    def get_inventory_valuation_report():
-        sql = """
+    def get_department_subdepartment_sales(start_date=None, end_date=None):
+        where, params = ReportModel._parse_dates(start_date, end_date)
+        sql = f"""
             SELECT 
-                COUNT(*) AS total_productos,
-                SUM(stock_actual) AS total_unidades,
-                SUM(stock_actual * precio_costo) AS valor_costo_total,
-                SUM(stock_actual * precio_venta) AS valor_venta_total,
-                SUM(stock_actual * (precio_venta - precio_costo)) AS ganancia_potencial,
-                SUM(CASE WHEN stock_actual <= 0 THEN 1 ELSE 0 END) AS cant_agotados,
-                SUM(CASE WHEN stock_actual > 0 AND stock_actual <= stock_minimo THEN 1 ELSE 0 END) AS cant_stock_bajo
-            FROM productos
+                ISNULL(d.nombre, 'Sin Departamento') as departamento,
+                ISNULL(s.nombre, 'General') as subdepartamento,
+                SUM(dv.cantidad) as unidades_vendidas,
+                SUM(dv.subtotal) as total_bruto,
+                SUM(dv.subtotal * 0.18) as itbis_estimado,
+                SUM(dv.subtotal * 1.18) as total_neto,
+                SUM(dv.subtotal - (dv.cantidad * dv.precio_costo)) as ganancia_estimada
+            FROM detalle_ventas dv
+            JOIN ventas v ON dv.venta_id = v.id
+            JOIN productos p ON dv.producto_id = p.id
+            LEFT JOIN subdepartamentos s ON p.subdepartamento_id = s.id
+            LEFT JOIN departamentos d ON s.departamento_id = d.id
+            {where}
+            GROUP BY d.nombre, s.nombre
+            ORDER BY total_bruto DESC
         """
-        val_summary = execute_query(sql, fetch_one=True)
+        return execute_query(sql, tuple(params), fetch_all=True) or []
 
-        sql_details = """
+    @staticmethod
+    def get_inventory_valuation_report():
+        sql_prods = """
             SELECT 
-                p.codigo_barras, p.nombre,
-                COALESCE(d.nombre, 'General') AS departamento,
-                COALESCE(sd.nombre, 'General') AS subdepartamento,
-                p.precio_costo, p.precio_venta, p.stock_actual, p.stock_minimo,
-                (p.stock_actual * p.precio_costo) AS valor_costo,
-                (p.stock_actual * p.precio_venta) AS valor_venta
+                p.id,
+                p.codigo_barras,
+                p.nombre,
+                ISNULL(s.nombre, 'Sin Categoria') as subdepartamento_nombre,
+                p.stock_actual,
+                p.stock_minimo,
+                p.precio_costo,
+                p.precio_venta,
+                (p.stock_actual * p.precio_costo) as valor_costo,
+                (p.stock_actual * p.precio_venta) as valor_venta
             FROM productos p
-            LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
-            LEFT JOIN departamentos d ON sd.departamento_id = d.id
-            ORDER BY valor_venta DESC
+            LEFT JOIN subdepartamentos s ON p.subdepartamento_id = s.id
+            ORDER BY p.nombre ASC
         """
-        details = execute_query(sql_details, fetch_all=True)
+        details = execute_query(sql_prods, fetch_all=True) or []
+
+        tot_prods = len(details)
+        costo_tot = sum(float(r.get("valor_costo") or 0) for r in details)
+        venta_tot = sum(float(r.get("valor_venta") or 0) for r in details)
+        ganancia_pot = venta_tot - costo_tot
+        cant_agotados = sum(1 for r in details if (r.get("stock_actual") or 0) <= 0)
+        cant_stock_bajo = sum(1 for r in details if 0 < (r.get("stock_actual") or 0) <= (r.get("stock_minimo") or 5))
+
+        summary = {
+            "total_productos": tot_prods,
+            "valor_costo_total": costo_tot,
+            "valor_venta_total": venta_tot,
+            "ganancia_potencial": ganancia_pot,
+            "cant_agotados": cant_agotados,
+            "cant_stock_bajo": cant_stock_bajo
+        }
 
         return {
-            "summary": val_summary,
+            "summary": summary,
             "details": details
         }
 
     @staticmethod
-    def get_electronic_journal(start_dt, end_dt):
-        sql_ventas = """
-            SELECT v.*, u.username AS cajero_nombre
-            FROM ventas v
-            LEFT JOIN usuarios u ON v.usuario_id = u.id
-            WHERE v.fecha >= ? AND v.fecha <= ?
-            ORDER BY v.fecha DESC
-        """
-        ventas = execute_query(sql_ventas, (start_dt, end_dt), fetch_all=True)
-
-        for v in ventas:
-            sql_items = """
-                SELECT dv.*, p.nombre AS producto_nombre, p.codigo_barras,
-                       COALESCE(sd.nombre, 'General') AS subdepartamento_nombre
-                FROM detalle_ventas dv
-                JOIN productos p ON dv.producto_id = p.id
-                LEFT JOIN subdepartamentos sd ON p.subdepartamento_id = sd.id
-                WHERE dv.venta_id = ?
-            """
-            v["items"] = execute_query(sql_items, (v["id"],), fetch_all=True)
-
-        return ventas
+    def get_date_range_bounds():
+        sql = "SELECT MIN(fecha) as min_date, MAX(fecha) as max_date FROM ventas"
+        res = execute_query(sql, fetch_one=True)
+        if not res or not res.get("min_date"):
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d")
+            return {"min_date": now_str, "max_date": now_str}
+        min_d = str(res["min_date"])[:10]
+        max_d = str(res["max_date"])[:10]
+        return {"min_date": min_d, "max_date": max_d}
